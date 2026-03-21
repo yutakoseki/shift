@@ -2,6 +2,10 @@ output "dynamodb_table_name" {
   value = aws_dynamodb_table.shift.name
 }
 
+output "user_table_name" {
+  value = aws_dynamodb_table.user.name
+}
+
 output "cognito_user_pool_id" {
   value = aws_cognito_user_pool.director_pool.id
 }

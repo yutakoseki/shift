@@ -9,6 +9,17 @@ resource "aws_dynamodb_table" "shift" {
   }
 }
 
+resource "aws_dynamodb_table" "user" {
+  name         = "${var.project_name}-user"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "userId"
+
+  attribute {
+    name = "userId"
+    type = "S"
+  }
+}
+
 resource "aws_iam_user" "vercel_runtime" {
   name = "${var.project_name}-vercel-runtime"
 }
@@ -28,9 +39,23 @@ resource "aws_iam_user_policy" "vercel_runtime_ddb" {
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
-          "dynamodb:PutItem"
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Scan"
         ]
-        Resource = aws_dynamodb_table.shift.arn
+        Resource = [
+          aws_dynamodb_table.shift.arn,
+          aws_dynamodb_table.user.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminSetUserPassword",
+          "cognito-idp:AdminGetUser"
+        ]
+        Resource = aws_cognito_user_pool.director_pool.arn
       }
     ]
   })

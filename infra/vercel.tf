@@ -18,9 +18,23 @@ resource "vercel_project_environment_variable" "shift_table_name" {
   target     = ["production", "preview", "development"]
 }
 
+resource "vercel_project_environment_variable" "user_table_name" {
+  project_id = vercel_project.app.id
+  key        = "USER_TABLE_NAME"
+  value      = aws_dynamodb_table.user.name
+  target     = ["production", "preview", "development"]
+}
+
 resource "vercel_project_environment_variable" "cognito_user_pool_id" {
   project_id = vercel_project.app.id
   key        = "NEXT_PUBLIC_COGNITO_USER_POOL_ID"
+  value      = aws_cognito_user_pool.director_pool.id
+  target     = ["production", "preview", "development"]
+}
+
+resource "vercel_project_environment_variable" "cognito_user_pool_id_server" {
+  project_id = vercel_project.app.id
+  key        = "COGNITO_USER_POOL_ID"
   value      = aws_cognito_user_pool.director_pool.id
   target     = ["production", "preview", "development"]
 }
@@ -43,6 +57,6 @@ resource "vercel_project_environment_variable" "aws_secret_access_key" {
   project_id = vercel_project.app.id
   key        = "AWS_SECRET_ACCESS_KEY"
   value      = aws_iam_access_key.vercel_runtime.secret
-  target     = ["production", "preview", "development"]
+  target     = ["production", "preview"]
   sensitive  = true
 }

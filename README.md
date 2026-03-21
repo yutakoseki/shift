@@ -11,6 +11,7 @@ cp .env.example .env.local
 ```
 
 `.env.local` は Terraform 適用後の値に置き換えてください。
+デバッグログを有効にする場合は `DEBUG_LOG_ENABLED=true` を設定してください。
 
 ## 2. ローカル起動
 
@@ -20,6 +21,7 @@ npm run dev
 
 - `http://localhost:3000/login` でログイン
 - ログイン後に `http://localhost:3000/` でシフト表を編集
+- ログイン後はサイドバーから `シフト作成 / データ管理 / ユーザー管理` に遷移
 
 ## 3. Terraform（AWS + Vercel）
 
@@ -56,5 +58,7 @@ vercel --prod
 - 認証: Amplify(Cognito)ログイン必須
 - シフトUI: 縦軸=日付、横軸=早番/中番/遅番
 - 保存: 月単位で DynamoDB に上書き保存
+- ユーザー管理: Cognito作成時にDynamoDBへユーザープロファイル保存
+- ロール: 新規登録は「メンバー」、ロール変更は「管理者」のみ実行可能
 
 # shift

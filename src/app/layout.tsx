@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import "@aws-amplify/ui-react/styles.css";
+import AppShell from "@/components/app-shell";
 
 export const metadata: Metadata = {
   title: "保育園シフト管理",
@@ -14,7 +14,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ja">
-      <body>{children}</body>
+      <body>
+        <AppShell>{children}</AppShell>
+      </body>
     </html>
   );
 }
