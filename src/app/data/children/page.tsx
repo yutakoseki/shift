@@ -471,40 +471,40 @@ export default function ChildrenPage() {
             <h1 className="text-2xl font-bold text-orange-900">園児管理</h1>
             <p className="text-sm text-orange-700">生年月日から年齢（◯歳児）を自動計算して表示します。</p>
           </div>
-          <Link href="/data" className="rounded-md bg-orange-100 px-3 py-1 text-sm text-orange-700 hover:bg-orange-200">
-            戻る
-          </Link>
-        </div>
-        <div className="mt-3 flex items-center gap-2">
-          {role === "管理者" ? (
-            <button
-              className="rounded-md bg-orange-100 px-3 py-1 text-sm text-orange-700 hover:bg-orange-200"
-              onClick={() => {
-                setExpandedChildId("");
-                const newId = createId("child");
-                setData((prev) =>
-                  prev
-                    ? {
-                        ...prev,
-                        children: [
-                          ...prev.children,
-                          {
-                            id: newId,
-                            name: "",
-                            birthDate: "",
-                            classId: "",
-                            className: "",
-                            attendanceByWeekday: createDefaultChildAttendance()
-                          }
-                        ]
-                      }
-                    : prev
-                );
-              }}
-            >
-              追加
-            </button>
-          ) : null}
+          <div className="flex items-center gap-2">
+            {role === "管理者" ? (
+              <button
+                className="rounded-md bg-orange-100 px-4 py-2 text-base font-semibold text-orange-700 hover:bg-orange-200"
+                onClick={() => {
+                  setExpandedChildId("");
+                  const newId = createId("child");
+                  setData((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          children: [
+                            ...prev.children,
+                            {
+                              id: newId,
+                              name: "",
+                              birthDate: "",
+                              classId: "",
+                              className: "",
+                              attendanceByWeekday: createDefaultChildAttendance()
+                            }
+                          ]
+                        }
+                      : prev
+                  );
+                }}
+              >
+                追加
+              </button>
+            ) : null}
+            <Link href="/data" className="rounded-md bg-orange-100 px-4 py-2 text-base font-semibold text-orange-700 hover:bg-orange-200">
+              戻る
+            </Link>
+          </div>
         </div>
         {error ? <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p> : null}
       </section>
