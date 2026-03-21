@@ -172,28 +172,6 @@ export default function ChildrenPage() {
     });
   }
 
-  const timelineSlots = useMemo(() => {
-    const slots: number[] = [];
-    for (let minutes = 6 * 60; minutes <= 20 * 60; minutes += 15) {
-      slots.push(minutes);
-    }
-    return slots;
-  }, []);
-
-  const hourGroups = useMemo(() => {
-    const groups: { hour: number; count: number }[] = [];
-    timelineSlots.forEach((minutes) => {
-      const hour = Math.floor(minutes / 60);
-      const last = groups[groups.length - 1];
-      if (last && last.hour === hour) {
-        last.count += 1;
-      } else {
-        groups.push({ hour, count: 1 });
-      }
-    });
-    return groups;
-  }, [timelineSlots]);
-
   const groupedRows = useMemo(() => {
     if (!data) {
       return [] as { classKey: string; classLabel: string; rows: ChildAttendanceRow[] }[];
@@ -238,6 +216,41 @@ export default function ChildrenPage() {
       return a.classLabel.localeCompare(b.classLabel, "ja");
     });
   }, [data, selectedWeekday]);
+
+  const timelineSlots = useMemo(() => {
+    const enabledRows = groupedRows.flatMap((group) => group.rows).filter((row) => row.enabled);
+    const fallbackStart = 6 * 60;
+    const fallbackEnd = 20 * 60;
+    const rawStart = enabledRows.length > 0 ? Math.min(...enabledRows.map((row) => row.startMinutes)) : fallbackStart;
+    const rawEnd = enabledRows.length > 0 ? Math.max(...enabledRows.map((row) => row.endMinutes)) : fallbackEnd;
+
+    // 15分グリッドに合わせて表示範囲を切り上げ/切り下げする
+    const start = Math.max(0, Math.floor(rawStart / 15) * 15);
+    const end = Math.min(24 * 60, Math.ceil(rawEnd / 15) * 15);
+
+    const slots: number[] = [];
+    for (let minutes = start; minutes < end; minutes += 15) {
+      slots.push(minutes);
+    }
+    if (slots.length === 0) {
+      slots.push(start);
+    }
+    return slots;
+  }, [groupedRows]);
+
+  const hourGroups = useMemo(() => {
+    const groups: { hour: number; count: number }[] = [];
+    timelineSlots.forEach((minutes) => {
+      const hour = Math.floor(minutes / 60);
+      const last = groups[groups.length - 1];
+      if (last && last.hour === hour) {
+        last.count += 1;
+      } else {
+        groups.push({ hour, count: 1 });
+      }
+    });
+    return groups;
+  }, [timelineSlots]);
 
   if (loading) {
     return <main className="p-6 text-orange-900">読込中...</main>;
