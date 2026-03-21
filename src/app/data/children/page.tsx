@@ -25,12 +25,6 @@ function toMinutes(value: string): number {
   return h * 60 + m;
 }
 
-function formatMinuteLabel(minutes: number): string {
-  const h = String(Math.floor(minutes / 60)).padStart(2, "0");
-  const m = String(minutes % 60).padStart(2, "0");
-  return `${h}:${m}`;
-}
-
 function parseAgeGroupRange(ageGroup: string): { minAge: number; maxAge: number } | null {
   const match = ageGroup.match(/(\d+)\s*-\s*(\d+)/);
   if (!match) {
@@ -310,7 +304,7 @@ export default function ChildrenPage() {
     if (!data) {
       return [] as {
         ageGroup: string;
-        classes: { classKey: string; classLabel: string; rows: ChildAttendanceRow[]; colorIndex: number }[];
+        classes: { classKey: string; classLabel: string; ageGroup: string; rows: ChildAttendanceRow[]; colorIndex: number }[];
       }[];
     }
 
@@ -340,7 +334,7 @@ export default function ChildrenPage() {
     })
       .filter((row) => row.enabled);
 
-    const grouped = new Map<string, { classKey: string; classLabel: string; rows: ChildAttendanceRow[]; colorIndex: number }>();
+    const grouped = new Map<string, { classKey: string; classLabel: string; ageGroup: string; rows: ChildAttendanceRow[]; colorIndex: number }>();
 
     data.nurseryClasses.forEach((classItem, index) => {
       grouped.set(classItem.id, {

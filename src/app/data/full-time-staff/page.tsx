@@ -157,7 +157,8 @@ export default function FullTimeStaffPage() {
   }
 
   const classOptions = data.nurseryClasses.map((classItem) => classItem.name.trim()).filter((name) => name.length > 0);
-  const nonCustomShiftPatternCodes = data.shiftPatterns
+  const shiftPatterns = data.shiftPatterns;
+  const nonCustomShiftPatternCodes = shiftPatterns
     .filter((pattern) => !pattern.isCustom)
     .map((pattern) => pattern.code.trim())
     .filter((code) => code.length > 0);
@@ -168,13 +169,13 @@ export default function FullTimeStaffPage() {
     .map((staff, index) => ({ staff, index }))
     .filter(({ staff }) => persistedIds.includes(staff.id));
 
-  function renderStaffRow(staff: FullTimeStaff, index: number): JSX.Element {
+  function renderStaffRow(staff: FullTimeStaff, index: number) {
     const isReadOnly = role !== "管理者" || (persistedIds.includes(staff.id) && editingId !== staff.id);
     const selectedMainClasses = unique(parseCommaSeparated(staff.mainClass));
     const selectedShiftCodes =
       staff.possibleShiftPatternCodes.length > 0 ? unique(staff.possibleShiftPatternCodes) : nonCustomShiftPatternCodes;
     const availableClassOptions = classOptions.filter((className) => !selectedMainClasses.includes(className));
-    const availableShiftOptions = data.shiftPatterns.filter((pattern) => !selectedShiftCodes.includes(pattern.code));
+    const availableShiftOptions = shiftPatterns.filter((pattern) => !selectedShiftCodes.includes(pattern.code));
     const pendingClass = pendingClassById[staff.id] ?? availableClassOptions[0] ?? "";
     const pendingPattern = pendingPatternById[staff.id] ?? availableShiftOptions[0]?.code ?? "";
 
@@ -278,7 +279,7 @@ export default function FullTimeStaffPage() {
               <button
                 type="button"
                 className="rounded bg-orange-100 px-3 py-1.5 text-sm font-medium text-orange-800 hover:bg-orange-200 disabled:opacity-60"
-                disabled={isReadOnly || data.shiftPatterns.length === 0 || availableShiftOptions.length === 0}
+                disabled={isReadOnly || shiftPatterns.length === 0 || availableShiftOptions.length === 0}
                 onClick={() => {
                   setPatternPickerOpenById((prev) => ({ ...prev, [staff.id]: true }));
                   setPendingPatternById((prev) => ({ ...prev, [staff.id]: availableShiftOptions[0]?.code ?? "" }));
@@ -293,7 +294,7 @@ export default function FullTimeStaffPage() {
               <select
                 className="min-w-0 flex-1 rounded bg-white px-2 py-1"
                 value={pendingPattern}
-                disabled={isReadOnly || data.shiftPatterns.length === 0 || availableShiftOptions.length === 0}
+                disabled={isReadOnly || shiftPatterns.length === 0 || availableShiftOptions.length === 0}
                 onChange={(event) =>
                   setPendingPatternById((prev) => ({
                     ...prev,
@@ -301,7 +302,7 @@ export default function FullTimeStaffPage() {
                   }))
                 }
               >
-                {data.shiftPatterns.length === 0 ? (
+                {shiftPatterns.length === 0 ? (
                   <option value="">シフトパターンを先に登録してください</option>
                 ) : availableShiftOptions.length === 0 ? (
                   <option value="">追加可能なパターンはありません</option>
@@ -317,7 +318,7 @@ export default function FullTimeStaffPage() {
               <button
                 type="button"
                 className="rounded bg-orange-100 px-1.5 py-0.5 text-[11px] text-orange-800 hover:bg-orange-200 disabled:opacity-60"
-                disabled={isReadOnly || data.shiftPatterns.length === 0 || availableShiftOptions.length === 0 || !pendingPattern}
+                disabled={isReadOnly || shiftPatterns.length === 0 || availableShiftOptions.length === 0 || !pendingPattern}
                 onClick={() => {
                   const next = unique([...selectedShiftCodes, pendingPattern]);
                   updateStaff(index, { possibleShiftPatternCodes: next });
@@ -338,7 +339,7 @@ export default function FullTimeStaffPage() {
           ) : null}
           <div className="flex flex-wrap items-center gap-1">
             {selectedShiftCodes.map((code) => {
-              const pattern = data.shiftPatterns.find((item) => item.code === code);
+              const pattern = shiftPatterns.find((item) => item.code === code);
               return (
                 <span key={code} className="inline-flex items-center gap-1 rounded-full bg-orange-200 px-2 py-0.5 text-xs text-orange-900">
                   {code}

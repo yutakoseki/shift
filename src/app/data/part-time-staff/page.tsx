@@ -185,7 +185,7 @@ export default function PartTimeStaffPage() {
     notes: ""
   });
 
-  function renderStaffRow(staff: PartTimeStaff, index: number): JSX.Element {
+  function renderStaffRow(staff: PartTimeStaff, index: number) {
     const isReadOnly = role !== "管理者" || (persistedIds.includes(staff.id) && editingId !== staff.id);
     const selectedMainClasses = unique(parseCommaSeparated(staff.mainClass));
     const selectedShiftCodes = unique(staff.possibleShiftPatternCodes);
@@ -300,7 +300,7 @@ export default function PartTimeStaffPage() {
                 <button
                   type="button"
                   className="rounded bg-orange-100 px-3 py-1.5 text-sm font-medium text-orange-800 hover:bg-orange-200 disabled:opacity-60"
-                  disabled={data.shiftPatterns.length === 0 || availableShiftOptions.length === 0}
+                  disabled={shiftPatternsForSelect.length === 0 || availableShiftOptions.length === 0}
                   onClick={() => {
                     setPatternPickerOpenById((prev) => ({ ...prev, [staff.id]: true }));
                     setPendingPatternById((prev) => ({ ...prev, [staff.id]: availableShiftOptions[0]?.code ?? "" }));
@@ -315,7 +315,7 @@ export default function PartTimeStaffPage() {
                 <select
                   className="min-w-0 flex-1 rounded bg-white px-2 py-1"
                   value={pendingPattern}
-                  disabled={data.shiftPatterns.length === 0 || availableShiftOptions.length === 0}
+                  disabled={shiftPatternsForSelect.length === 0 || availableShiftOptions.length === 0}
                   onChange={(event) =>
                     setPendingPatternById((prev) => ({
                       ...prev,
@@ -323,7 +323,7 @@ export default function PartTimeStaffPage() {
                     }))
                   }
                 >
-                  {data.shiftPatterns.length === 0 ? (
+                  {shiftPatternsForSelect.length === 0 ? (
                     <option value="">シフトパターンを先に登録してください</option>
                   ) : availableShiftOptions.length === 0 ? (
                     <option value="">追加可能なパターンはありません</option>
@@ -339,7 +339,7 @@ export default function PartTimeStaffPage() {
                 <button
                   type="button"
                   className="rounded bg-orange-100 px-1.5 py-0.5 text-[11px] text-orange-800 hover:bg-orange-200 disabled:opacity-60"
-                  disabled={data.shiftPatterns.length === 0 || availableShiftOptions.length === 0 || !pendingPattern}
+                  disabled={shiftPatternsForSelect.length === 0 || availableShiftOptions.length === 0 || !pendingPattern}
                   onClick={() => {
                     const next = unique([...selectedShiftCodes, pendingPattern]);
                     updateStaff(index, {
@@ -363,7 +363,7 @@ export default function PartTimeStaffPage() {
             ) : null}
             <div className="flex flex-wrap items-center gap-1">
               {selectedShiftCodes.map((code) => {
-                const pattern = data.shiftPatterns.find((item) => item.code === code);
+                const pattern = shiftPatternsForSelect.find((item) => item.code === code);
                 return (
                   <span key={code} className="inline-flex items-center gap-1 rounded-full bg-orange-200 px-2 py-0.5 text-xs text-orange-900">
                     {code}
