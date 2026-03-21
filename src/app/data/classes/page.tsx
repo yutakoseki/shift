@@ -6,14 +6,30 @@ import { MasterData } from "@/types/master-data";
 import { UserRole } from "@/types/user";
 import { createId, fetchCurrentUserRole, fetchMasterData, saveMasterData, showToast } from "@/lib/master-data-client";
 
+const CLASS_AGE_ORDER: Record<string, number> = {
+  "0-1歳児": 0,
+  "2-3歳児": 1,
+  "4-5歳児": 2
+};
+
+function sortNurseryClasses(classes: MasterData["nurseryClasses"]): MasterData["nurseryClasses"] {
+  return [...classes].sort((a, b) => {
+    const orderA = CLASS_AGE_ORDER[a.ageGroup] ?? Number.MAX_SAFE_INTEGER;
+    const orderB = CLASS_AGE_ORDER[b.ageGroup] ?? Number.MAX_SAFE_INTEGER;
+    if (orderA !== orderB) {
+      return orderA - orderB;
+    }
+    return a.name.localeCompare(b.name, "ja");
+  });
+}
+
 export default function ClassesPage() {
   const [loading, setLoading] = useState(true);
-  const [actionLoadingClassId, setActionLoadingClassId] = useState("");
-  const [actionLabel, setActionLabel] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [role, setRole] = useState<UserRole>("メンバー");
-  const [persistedClassIds, setPersistedClassIds] = useState<string[]>([]);
-  const [editingClassId, setEditingClassId] = useState("");
+  const [newClassName, setNewClassName] = useState("");
+  const [newAgeGroup, setNewAgeGroup] = useState("");
   const [data, setData] = useState<MasterData | null>(null);
 
   useEffect(() => {
@@ -22,7 +38,6 @@ export default function ClassesPage() {
         setRole(await fetchCurrentUserRole());
         const masterData = await fetchMasterData();
         setData(masterData);
-        setPersistedClassIds(masterData.nurseryClasses.map((item) => item.id));
       } catch (requestError) {
         setError(requestError instanceof Error ? requestError.message : "読込に失敗しました。");
       } finally {
@@ -31,68 +46,32 @@ export default function ClassesPage() {
     })();
   }, []);
 
-  async function handleUpsert(index: number): Promise<void> {
-    if (!data) {
-      return;
-    }
-
-    const target = data.nurseryClasses[index];
-    if (!target) {
-      return;
-    }
-    if (!target.name.trim() || !target.ageGroup.trim()) {
-      setError("クラス名と対象年齢帯を入力してください。");
-      return;
-    }
-
-    setActionLoadingClassId(target.id);
-    setActionLabel(persistedClassIds.includes(target.id) ? "更新中..." : "登録中...");
-    setError("");
-    try {
-      await saveMasterData(data);
-      if (!persistedClassIds.includes(target.id)) {
-        setPersistedClassIds((prev) => [...prev, target.id]);
-      }
-      setEditingClassId("");
-      showToast(persistedClassIds.includes(target.id) ? "更新しました" : "登録しました");
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "登録/更新に失敗しました。");
-    } finally {
-      setActionLoadingClassId("");
-      setActionLabel("");
-    }
-  }
-
-  async function handleDelete(index: number): Promise<void> {
+  async function handleCreate(): Promise<void> {
     if (!data || role !== "管理者") {
       return;
     }
-
-    const target = data.nurseryClasses[index];
-    if (!target) {
+    if (!newClassName.trim() || !newAgeGroup.trim()) {
+      setError("クラス名と対象年齢帯を入力してください。");
       return;
     }
-
     const previousData = data;
     const nextData: MasterData = {
       ...data,
-      nurseryClasses: data.nurseryClasses.filter((_, itemIndex) => itemIndex !== index)
+      nurseryClasses: [...data.nurseryClasses, { id: createId("class"), name: newClassName.trim(), ageGroup: newAgeGroup }]
     };
-
-    setActionLoadingClassId(target.id);
-    setActionLabel("削除中...");
+    setSubmitting(true);
     setError("");
     setData(nextData);
     try {
       await saveMasterData(nextData);
-      setPersistedClassIds((prev) => prev.filter((id) => id !== target.id));
-      showToast("削除しました");
+      setNewClassName("");
+      setNewAgeGroup("");
+      showToast("登録しました");
     } catch (requestError) {
       setData(previousData);
-      setError(requestError instanceof Error ? requestError.message : "削除に失敗しました。");
+      setError(requestError instanceof Error ? requestError.message : "登録に失敗しました。");
     } finally {
-      setActionLoadingClassId("");
-      setActionLabel("");
+      setSubmitting(false);
     }
   }
 
@@ -118,106 +97,52 @@ export default function ClassesPage() {
         </div>
         <div className="mt-3 flex items-center gap-2">
           {role === "管理者" ? (
-            <button
-              className="rounded-md bg-orange-100 px-3 py-1 text-sm text-orange-700 hover:bg-orange-200"
-              onClick={() =>
-                setData((prev) =>
-                  prev
-                    ? {
-                        ...prev,
-                        nurseryClasses: [...prev.nurseryClasses, { id: createId("class"), name: "", ageGroup: "" }]
-                      }
-                    : prev
-                )
-              }
-            >
-              クラス追加
-            </button>
+            <p className="text-sm text-orange-700">登録はこのセクションから行います。</p>
           ) : null}
         </div>
+        {role === "管理者" ? (
+          <div className="mt-3 grid gap-2 md:grid-cols-12">
+            <input
+              className="rounded bg-orange-50 px-2 py-2 md:col-span-5"
+              value={newClassName}
+              placeholder="クラス名（例: ひよこ）"
+              onChange={(event) => setNewClassName(event.target.value)}
+            />
+            <select
+              className="rounded bg-orange-50 px-2 py-2 md:col-span-5"
+              value={newAgeGroup}
+              onChange={(event) => setNewAgeGroup(event.target.value)}
+            >
+              <option value="">対象年齢帯を選択</option>
+              <option value="0-1歳児">0-1歳児</option>
+              <option value="2-3歳児">2-3歳児</option>
+              <option value="4-5歳児">4-5歳児</option>
+              <option value="その他">その他</option>
+            </select>
+            <button
+              className="rounded bg-orange-500 px-3 py-2 text-white hover:bg-orange-600 disabled:opacity-60 md:col-span-2"
+              onClick={() => void handleCreate()}
+              disabled={submitting}
+            >
+              {submitting ? "登録中..." : "登録"}
+            </button>
+          </div>
+        ) : null}
         {error ? <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p> : null}
       </section>
 
       <section className="rounded-xl bg-white p-4 shadow-sm">
-        <div className="space-y-2">
-          {data.nurseryClasses.map((classItem, index) => (
+        <h2 className="text-sm font-semibold text-orange-900">登録済みクラス（表示専用）</h2>
+        <div className="mt-3 space-y-2">
+          {sortNurseryClasses(data.nurseryClasses).map((classItem) => (
             <div key={classItem.id} className="grid gap-2 rounded-md bg-orange-50 p-3 md:grid-cols-12">
-              <input
-                className="rounded bg-white px-2 py-1 md:col-span-5"
-                value={classItem.name}
-                placeholder="クラス名（例: ひよこ）"
-                disabled={role !== "管理者" || (persistedClassIds.includes(classItem.id) && editingClassId !== classItem.id)}
-                onChange={(event) =>
-                  setData((prev) =>
-                    prev
-                      ? {
-                          ...prev,
-                          nurseryClasses: prev.nurseryClasses.map((item, itemIndex) =>
-                            itemIndex === index ? { ...item, name: event.target.value } : item
-                          )
-                        }
-                      : prev
-                  )
-                }
-              />
-              <select
-                className="rounded bg-white px-2 py-1 md:col-span-5"
-                value={classItem.ageGroup}
-                disabled={role !== "管理者" || (persistedClassIds.includes(classItem.id) && editingClassId !== classItem.id)}
-                onChange={(event) =>
-                  setData((prev) =>
-                    prev
-                      ? {
-                          ...prev,
-                          nurseryClasses: prev.nurseryClasses.map((item, itemIndex) =>
-                            itemIndex === index ? { ...item, ageGroup: event.target.value } : item
-                          )
-                        }
-                      : prev
-                  )
-                }
-              >
-                <option value="">対象年齢帯を選択</option>
-                <option value="0-1歳児">0-1歳児</option>
-                <option value="2-3歳児">2-3歳児</option>
-                <option value="4-5歳児">4-5歳児</option>
-                <option value="その他">その他</option>
-              </select>
-              <div className="flex items-center justify-end gap-2 md:col-span-2">
-                {role === "管理者" ? (
-                  <button
-                    className="rounded bg-orange-500 px-2 py-1 text-white hover:bg-orange-600 disabled:opacity-60"
-                    onClick={() => {
-                      const isPersisted = persistedClassIds.includes(classItem.id);
-                      if (isPersisted && editingClassId !== classItem.id) {
-                        setEditingClassId(classItem.id);
-                        return;
-                      }
-                      void handleUpsert(index);
-                    }}
-                    disabled={Boolean(actionLoadingClassId)}
-                  >
-                    {actionLoadingClassId === classItem.id
-                      ? actionLabel
-                      : persistedClassIds.includes(classItem.id)
-                        ? editingClassId === classItem.id
-                          ? "更新"
-                          : "編集"
-                        : "登録"}
-                  </button>
-                ) : null}
-                {role === "管理者" ? (
-                  <button
-                    className="rounded bg-red-100 px-2 py-1 text-red-700 hover:bg-red-200 disabled:opacity-60"
-                    onClick={() => void handleDelete(index)}
-                    disabled={Boolean(actionLoadingClassId)}
-                  >
-                    削除
-                  </button>
-                ) : null}
-              </div>
+              <p className="rounded bg-white px-2 py-2 text-orange-900 md:col-span-7">{classItem.name || "（未設定）"}</p>
+              <p className="rounded bg-white px-2 py-2 text-orange-900 md:col-span-5">{classItem.ageGroup || "（未設定）"}</p>
             </div>
           ))}
+          {data.nurseryClasses.length === 0 ? (
+            <p className="rounded-md bg-orange-50 px-3 py-2 text-sm text-orange-700">まだクラスが登録されていません。</p>
+          ) : null}
         </div>
       </section>
     </main>

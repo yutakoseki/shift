@@ -62,6 +62,20 @@ function buildTimeOptions(startHour: number): string[] {
 
 const TIME_OPTIONS = buildTimeOptions(6);
 
+function rainbowHue(index: number, total: number): number {
+  if (total <= 0) {
+    return 0;
+  }
+  const smallSetHues = [0, 30, 55, 90]; // 赤, オレンジ, 黄, 黄緑
+  if (total <= 4) {
+    return smallSetHues[Math.min(index, total - 1)];
+  }
+  if (total === 1) {
+    return smallSetHues[0];
+  }
+  return Math.round((index / (total - 1)) * 330);
+}
+
 type ChildAttendanceRow = {
   id: string;
   name: string;
@@ -107,6 +121,45 @@ function findReferenceAttendance(
     }
   }
   return null;
+}
+
+function syncUncheckedWeekdayTimes(
+  attendanceByWeekday: ChildProfile["attendanceByWeekday"]
+): ChildProfile["attendanceByWeekday"] {
+  const reference = findReferenceAttendance(attendanceByWeekday);
+  if (!reference) {
+    return attendanceByWeekday;
+  }
+  return attendanceByWeekday.map((slot) => {
+    if (slot.enabled) {
+      return slot;
+    }
+    return {
+      ...slot,
+      startTime: reference.startTime,
+      endTime: reference.endTime
+    };
+  });
+}
+
+function propagateWeekdayTimeToOthers(
+  attendanceByWeekday: ChildProfile["attendanceByWeekday"],
+  sourceWeekday: number
+): ChildProfile["attendanceByWeekday"] {
+  const source = attendanceByWeekday.find((slot) => slot.weekday === sourceWeekday);
+  if (!source) {
+    return attendanceByWeekday;
+  }
+  return attendanceByWeekday.map((slot) => {
+    if (slot.weekday === sourceWeekday || !referenceWeekdayOrder().includes(slot.weekday)) {
+      return slot;
+    }
+    return {
+      ...slot,
+      startTime: source.startTime,
+      endTime: source.endTime
+    };
+  });
 }
 
 export default function ChildrenPage() {
@@ -366,6 +419,21 @@ export default function ChildrenPage() {
     return groups;
   }, [timelineSlots]);
 
+  const classSequence = useMemo(() => {
+    const indexByClassKey = new Map<string, number>();
+    let sequenceIndex = 0;
+    groupedRows.forEach((ageGroupBlock) => {
+      ageGroupBlock.classes.forEach((classGroup) => {
+        indexByClassKey.set(classGroup.classKey, sequenceIndex);
+        sequenceIndex += 1;
+      });
+    });
+    return {
+      indexByClassKey,
+      total: Math.max(sequenceIndex, 1)
+    };
+  }, [groupedRows]);
+
   if (loading) {
     return <main className="p-6 text-orange-900">読込中...</main>;
   }
@@ -392,6 +460,7 @@ export default function ChildrenPage() {
               className="rounded-md bg-orange-100 px-3 py-1 text-sm text-orange-700 hover:bg-orange-200"
               onClick={() => {
                 setExpandedChildId("");
+                const newId = createId("child");
                 setData((prev) =>
                   prev
                     ? {
@@ -399,7 +468,7 @@ export default function ChildrenPage() {
                         children: [
                           ...prev.children,
                           {
-                            id: createId("child"),
+                            id: newId,
                             name: "",
                             birthDate: "",
                             classId: "",
@@ -527,8 +596,9 @@ export default function ChildrenPage() {
                       endTime: "18:00"
                     };
                     return (
-                      <div key={weekday.value} className="flex items-center gap-2 rounded bg-orange-50 px-2 py-1">
-                        <label className="inline-flex items-center gap-1 text-sm text-orange-900">
+                      <div key={weekday.value} className="flex flex-col items-start gap-1 rounded bg-orange-50 px-2 py-1">
+                        <div className="flex items-center gap-2">
+                          <label className="inline-flex items-center gap-1 text-sm text-orange-900">
                           <input
                             className="orange-checkbox"
                             type="checkbox"
@@ -554,49 +624,65 @@ export default function ChildrenPage() {
                                 };
                               });
                               updateChild(index, {
-                                attendanceByWeekday: nextAttendance
+                                attendanceByWeekday: syncUncheckedWeekdayTimes(nextAttendance)
                               });
                             }}
                           />
-                          {weekday.label}
-                        </label>
-                        <select
-                          className="rounded bg-white px-2 py-1 text-sm"
-                          value={slot.startTime}
-                          disabled={!slot.enabled || role !== "管理者" || (persistedIds.includes(child.id) && editingId !== child.id)}
-                          onChange={(event) =>
-                            updateChild(index, {
-                              attendanceByWeekday: child.attendanceByWeekday.map((item) =>
+                            {weekday.label}
+                          </label>
+                          <select
+                            className="rounded bg-white px-2 py-1 text-sm"
+                            value={slot.startTime}
+                            disabled={!slot.enabled || role !== "管理者" || (persistedIds.includes(child.id) && editingId !== child.id)}
+                            onChange={(event) => {
+                              const nextAttendance = child.attendanceByWeekday.map((item) =>
                                 item.weekday === weekday.value ? { ...item, startTime: event.target.value } : item
-                              )
-                            })
-                          }
-                        >
-                          {TIME_OPTIONS.map((time) => (
-                            <option key={`start-${weekday.value}-${time}`} value={time}>
-                              {time}
-                            </option>
-                          ))}
-                        </select>
-                        <span className="text-sm text-orange-700">-</span>
-                        <select
-                          className="rounded bg-white px-2 py-1 text-sm"
-                          value={slot.endTime}
-                          disabled={!slot.enabled || role !== "管理者" || (persistedIds.includes(child.id) && editingId !== child.id)}
-                          onChange={(event) =>
-                            updateChild(index, {
-                              attendanceByWeekday: child.attendanceByWeekday.map((item) =>
+                              );
+                              updateChild(index, {
+                                attendanceByWeekday: nextAttendance
+                              });
+                            }}
+                          >
+                            {TIME_OPTIONS.map((time) => (
+                              <option key={`start-${weekday.value}-${time}`} value={time}>
+                                {time}
+                              </option>
+                            ))}
+                          </select>
+                          <span className="text-sm text-orange-700">-</span>
+                          <select
+                            className="rounded bg-white px-2 py-1 text-sm"
+                            value={slot.endTime}
+                            disabled={!slot.enabled || role !== "管理者" || (persistedIds.includes(child.id) && editingId !== child.id)}
+                            onChange={(event) => {
+                              const nextAttendance = child.attendanceByWeekday.map((item) =>
                                 item.weekday === weekday.value ? { ...item, endTime: event.target.value } : item
-                              )
-                            })
-                          }
-                        >
-                          {TIME_OPTIONS.map((time) => (
-                            <option key={`end-${weekday.value}-${time}`} value={time}>
-                              {time}
-                            </option>
-                          ))}
-                        </select>
+                              );
+                              updateChild(index, {
+                                attendanceByWeekday: nextAttendance
+                              });
+                            }}
+                          >
+                            {TIME_OPTIONS.map((time) => (
+                              <option key={`end-${weekday.value}-${time}`} value={time}>
+                                {time}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        {role === "管理者" ? (
+                          <button
+                            className="rounded bg-orange-100 px-2 py-1 text-xs text-orange-700 hover:bg-orange-200 disabled:opacity-50"
+                            disabled={!slot.enabled || (persistedIds.includes(child.id) && editingId !== child.id)}
+                            onClick={() =>
+                              updateChild(index, {
+                                attendanceByWeekday: propagateWeekdayTimeToOthers(child.attendanceByWeekday, weekday.value)
+                              })
+                            }
+                          >
+                            他曜日へ反映
+                          </button>
+                        ) : null}
                       </div>
                     );
                   })}
@@ -674,16 +760,17 @@ export default function ChildrenPage() {
                     </td>
                   </tr>
                   {ageGroupBlock.classes.map((group) => {
-                    const palettes = [
-                      { band: "bg-fuchsia-200", cell: "bg-fuchsia-200" },
-                      { band: "bg-sky-200", cell: "bg-sky-200" },
-                      { band: "bg-lime-300", cell: "bg-lime-300" },
-                      { band: "bg-orange-200", cell: "bg-orange-200" }
-                    ];
-                    const palette = palettes[group.colorIndex % palettes.length];
+                    const sequenceIndex = classSequence.indexByClassKey.get(group.classKey) ?? 0;
+                    const startHue = rainbowHue(sequenceIndex, classSequence.total);
+                    const hueStep = classSequence.total <= 4 ? 14 : Math.max(14, Math.round(200 / classSequence.total));
+                    const nextHue = (startHue + hueStep) % 360;
+                    const bandStyle = {
+                      backgroundImage: `linear-gradient(90deg, hsl(${startHue} 88% 86%) 0%, hsl(${nextHue} 88% 74%) 100%)`
+                    };
+                    const cellColor = `hsl(${startHue} 84% 66%)`;
                     return (
                       <Fragment key={`group-fragment-${group.classKey}`}>
-                        <tr className={palette.band}>
+                        <tr style={bandStyle}>
                           <td colSpan={timelineSlots.length + 3} className="border border-white px-1 py-1 text-center font-bold text-orange-950">
                             {group.classLabel}
                           </td>
@@ -710,7 +797,8 @@ export default function ChildrenPage() {
                               return (
                                 <td
                                   key={`${row.id}-${slot}`}
-                                  className={`h-4 w-3 min-w-3 border border-white ${active ? palette.cell : "bg-white"}`}
+                                  className={`h-4 w-3 min-w-3 border border-white ${active ? "" : "bg-white"}`}
+                                  style={active ? { backgroundColor: cellColor } : undefined}
                                   title={active ? "在園" : "在園外"}
                                 />
                               );
