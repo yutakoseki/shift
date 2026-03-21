@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { Fragment } from "react";
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import FullscreenLoading from "@/components/fullscreen-loading";
 import { ChildProfile, MasterData } from "@/types/master-data";
 import { UserRole } from "@/types/user";
 import {
@@ -172,6 +174,8 @@ export default function ChildrenPage() {
   const [actionLabel, setActionLabel] = useState("");
   const [selectedWeekday, setSelectedWeekday] = useState(1);
   const [error, setError] = useState("");
+  const [deleteConfirmId, setDeleteConfirmId] = useState("");
+  const [isMounted, setIsMounted] = useState(false);
   const [data, setData] = useState<MasterData | null>(null);
 
   useEffect(() => {
@@ -187,6 +191,10 @@ export default function ChildrenPage() {
         setLoading(false);
       }
     })();
+  }, []);
+
+  useEffect(() => {
+    setIsMounted(true);
   }, []);
 
   async function handleUpsert(index: number): Promise<void> {
@@ -222,7 +230,7 @@ export default function ChildrenPage() {
     }
   }
 
-  async function handleDelete(index: number): Promise<void> {
+  async function performDelete(index: number): Promise<void> {
     if (!data || role !== "管理者") {
       return;
     }
@@ -255,6 +263,19 @@ export default function ChildrenPage() {
       setActionLoadingId("");
       setActionLabel("");
     }
+  }
+
+  async function handleDeleteConfirm(): Promise<void> {
+    if (!data || !deleteConfirmId) {
+      return;
+    }
+    const targetIndex = data.children.findIndex((child) => child.id === deleteConfirmId);
+    if (targetIndex < 0) {
+      setDeleteConfirmId("");
+      return;
+    }
+    setDeleteConfirmId("");
+    await performDelete(targetIndex);
   }
 
   function updateChild(index: number, patch: Partial<ChildProfile>): void {
@@ -435,7 +456,7 @@ export default function ChildrenPage() {
   }, [groupedRows]);
 
   if (loading) {
-    return <main className="p-6 text-orange-900">読込中...</main>;
+    return <FullscreenLoading />;
   }
 
   if (!data) {
@@ -577,7 +598,7 @@ export default function ChildrenPage() {
                   {role === "管理者" ? (
                     <button
                       className="rounded bg-red-100 px-2 py-1 text-red-700 hover:bg-red-200 disabled:opacity-60"
-                      onClick={() => void handleDelete(index)}
+                      onClick={() => setDeleteConfirmId(child.id)}
                       disabled={Boolean(actionLoadingId)}
                     >
                       削除
@@ -824,6 +845,32 @@ export default function ChildrenPage() {
           </table>
         </div>
       </section>
+
+      {isMounted && deleteConfirmId
+        ? createPortal(
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+              <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
+                <h3 className="text-lg font-semibold text-orange-900">削除確認</h3>
+                <p className="mt-3 text-sm text-orange-900">この園児データを削除しますか？</p>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    className="rounded-md bg-orange-100 px-4 py-2 text-sm font-semibold text-orange-800 hover:bg-orange-200"
+                    onClick={() => setDeleteConfirmId("")}
+                  >
+                    キャンセル
+                  </button>
+                  <button
+                    className="rounded-md bg-red-500 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600"
+                    onClick={() => void handleDeleteConfirm()}
+                  >
+                    削除する
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </main>
   );
 }

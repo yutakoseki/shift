@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { getCurrentUser, signOut } from "aws-amplify/auth";
 import { configureAmplify } from "@/lib/amplify";
+import FullscreenLoading from "@/components/fullscreen-loading";
 import { UserRole } from "@/types/user";
 
 type CurrentUser = {
@@ -164,7 +165,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   if (loadingAuth) {
-    return <main className="p-6">認証確認中...</main>;
+    return <FullscreenLoading message="認証確認中..." />;
   }
 
   return (

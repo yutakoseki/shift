@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import FullscreenLoading from "@/components/fullscreen-loading";
 import { MasterData } from "@/types/master-data";
 import { UserRole } from "@/types/user";
 import { createId, fetchCurrentUserRole, fetchMasterData, saveMasterData, showToast } from "@/lib/master-data-client";
@@ -76,7 +77,7 @@ export default function ClassesPage() {
   }
 
   if (loading) {
-    return <main className="p-6 text-orange-900">読込中...</main>;
+    return <FullscreenLoading />;
   }
 
   if (!data) {

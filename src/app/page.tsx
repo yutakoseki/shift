@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MasterData, PartTimeStaff } from "@/types/master-data";
 import { ShiftEntry, ShiftMonthResponse } from "@/types/shift";
+import FullscreenLoading from "@/components/fullscreen-loading";
 
 function monthToDates(month: string): string[] {
   const [yearText, monthText] = month.split("-");
@@ -161,8 +162,10 @@ export default function HomePage() {
   }
 
   return (
-    <main className="space-y-4 p-4 md:p-6">
-      <section className="rounded-xl bg-white p-4 shadow-sm">
+    <>
+      {loadingData || loadingMasterData ? <FullscreenLoading /> : null}
+      <main className="space-y-4 p-4 md:p-6">
+        <section className="rounded-xl bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-orange-900">保育園シフト管理</h1>
@@ -194,11 +197,10 @@ export default function HomePage() {
             </button>
           </div>
         </div>
-      </section>
+        </section>
 
-      <section className="overflow-auto rounded-xl bg-white shadow-sm">
-        {loadingMasterData ? <p className="px-4 py-3 text-sm text-orange-700">マスターデータを読込中...</p> : null}
-        <table className="min-w-full text-sm">
+        <section className="overflow-auto rounded-xl bg-white shadow-sm">
+          <table className="min-w-full text-sm">
           <thead className="bg-orange-100/70">
             <tr>
               <th className="px-3 py-2 text-left font-semibold text-orange-900">日付</th>
@@ -247,8 +249,9 @@ export default function HomePage() {
               </tr>
             ))}
           </tbody>
-        </table>
-      </section>
-    </main>
+          </table>
+        </section>
+      </main>
+    </>
   );
 }

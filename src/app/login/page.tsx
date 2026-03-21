@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { confirmSignUp, getCurrentUser, resendSignUpCode, signIn, signUp } from "aws-amplify/auth";
 import { configureAmplify } from "@/lib/amplify";
+import FullscreenLoading from "@/components/fullscreen-loading";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -14,6 +15,7 @@ export default function LoginPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [infoMessage, setInfoMessage] = useState("");
   const hasMinLength = password.length >= 8;
@@ -31,8 +33,15 @@ export default function LoginPage() {
       })
       .catch(() => {
         // 未ログイン時は何もしない
+      })
+      .finally(() => {
+        setCheckingAuth(false);
       });
   }, [router]);
+
+  if (checkingAuth) {
+    return <FullscreenLoading message="認証確認中..." />;
+  }
 
   async function onSubmitSignIn(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();

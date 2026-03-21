@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import FullscreenLoading from "@/components/fullscreen-loading";
 import { MasterData } from "@/types/master-data";
 import { UserRole } from "@/types/user";
 import { fetchCurrentUserRole, fetchMasterData, saveMasterData, showToast } from "@/lib/master-data-client";
@@ -14,6 +16,8 @@ export default function ChildRatiosPage() {
   const [actionLoadingIndex, setActionLoadingIndex] = useState<number | null>(null);
   const [actionLabel, setActionLabel] = useState("");
   const [error, setError] = useState("");
+  const [deleteConfirmIndex, setDeleteConfirmIndex] = useState<number | null>(null);
+  const [isMounted, setIsMounted] = useState(false);
   const [data, setData] = useState<MasterData | null>(null);
 
   useEffect(() => {
@@ -29,6 +33,10 @@ export default function ChildRatiosPage() {
         setLoading(false);
       }
     })();
+  }, []);
+
+  useEffect(() => {
+    setIsMounted(true);
   }, []);
 
   async function handleUpsert(index: number): Promise<void> {
@@ -60,7 +68,7 @@ export default function ChildRatiosPage() {
     }
   }
 
-  async function handleDelete(index: number): Promise<void> {
+  async function performDelete(index: number): Promise<void> {
     if (!data || role !== "管理者") {
       return;
     }
@@ -90,8 +98,17 @@ export default function ChildRatiosPage() {
     }
   }
 
+  async function handleDeleteConfirm(): Promise<void> {
+    if (deleteConfirmIndex === null) {
+      return;
+    }
+    const targetIndex = deleteConfirmIndex;
+    setDeleteConfirmIndex(null);
+    await performDelete(targetIndex);
+  }
+
   if (loading) {
-    return <main className="p-6 text-orange-900">読込中...</main>;
+    return <FullscreenLoading />;
   }
 
   if (!data) {
@@ -200,7 +217,7 @@ export default function ChildRatiosPage() {
                 {role === "管理者" ? (
                   <button
                     className="rounded bg-red-100 px-2 py-1 text-red-700 hover:bg-red-200 disabled:opacity-60"
-                    onClick={() => void handleDelete(index)}
+                    onClick={() => setDeleteConfirmIndex(index)}
                     disabled={actionLoadingIndex !== null}
                   >
                     削除
@@ -211,6 +228,31 @@ export default function ChildRatiosPage() {
           ))}
         </div>
       </section>
+      {isMounted && deleteConfirmIndex !== null
+        ? createPortal(
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+              <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
+                <h3 className="text-lg font-semibold text-orange-900">削除確認</h3>
+                <p className="mt-3 text-sm text-orange-900">この比率データを削除しますか？</p>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    className="rounded-md bg-orange-100 px-4 py-2 text-sm font-semibold text-orange-800 hover:bg-orange-200"
+                    onClick={() => setDeleteConfirmIndex(null)}
+                  >
+                    キャンセル
+                  </button>
+                  <button
+                    className="rounded-md bg-red-500 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600"
+                    onClick={() => void handleDeleteConfirm()}
+                  >
+                    削除する
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </main>
   );
 }
