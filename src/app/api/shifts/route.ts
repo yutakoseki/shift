@@ -12,7 +12,8 @@ function validateMonth(month: string | null): month is string {
 function isValidEntry(entry: ShiftEntry): boolean {
   return (
     /^\d{4}-\d{2}-\d{2}$/.test(entry.date) &&
-    ["早番", "中番", "遅番"].includes(entry.shiftType) &&
+    typeof entry.shiftType === "string" &&
+    entry.shiftType.trim().length > 0 &&
     typeof entry.staffName === "string"
   );
 }

@@ -70,6 +70,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
 
   const isPublicPage = useMemo(() => pathname.startsWith("/login"), [pathname]);
 
@@ -83,6 +84,30 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     window.localStorage.setItem("sidebar-collapsed", String(collapsed));
   }, [collapsed]);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onToast = (event: Event) => {
+      const customEvent = event as CustomEvent<{ message?: string }>;
+      const message = customEvent.detail?.message ?? "";
+      if (!message) {
+        return;
+      }
+      setToastMessage(message);
+      if (timer) {
+        clearTimeout(timer);
+      }
+      timer = setTimeout(() => setToastMessage(""), 2500);
+    };
+
+    window.addEventListener("app-toast", onToast as EventListener);
+    return () => {
+      window.removeEventListener("app-toast", onToast as EventListener);
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (isPublicPage) {
@@ -206,6 +231,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </button>
       </aside>
       <div className="min-w-0 flex-1">{children}</div>
+      {toastMessage ? (
+        <div className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white shadow-lg">
+          {toastMessage}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { createDefaultMasterData, MasterData, normalizeMasterData } from "@/types/master-data";
 import { ShiftEntry } from "@/types/shift";
 import { UserProfile, UserRole } from "@/types/user";
 import { logInfo } from "@/lib/server-log";
@@ -7,6 +8,12 @@ import { logInfo } from "@/lib/server-log";
 type ShiftMonthItem = {
   monthKey: string;
   entries: ShiftEntry[];
+  updatedAt: string;
+};
+
+type MasterDataItem = {
+  monthKey: string;
+  data: MasterData;
   updatedAt: string;
 };
 
@@ -23,6 +30,7 @@ const client = new DynamoDBClient({
 });
 
 const docClient = DynamoDBDocumentClient.from(client);
+const masterDataKey = "master-data-v1";
 
 export async function getShiftMonth(month: string): Promise<ShiftEntry[]> {
   if (!shiftTableName) {
@@ -53,6 +61,42 @@ export async function putShiftMonth(month: string, entries: ShiftEntry[]): Promi
         entries,
         updatedAt: new Date().toISOString()
       } satisfies ShiftMonthItem
+    })
+  );
+}
+
+export async function getMasterData(): Promise<MasterData> {
+  if (!shiftTableName) {
+    throw new Error("SHIFT_TABLE_NAME is required");
+  }
+
+  const result = await docClient.send(
+    new GetCommand({
+      TableName: shiftTableName,
+      Key: { monthKey: masterDataKey }
+    })
+  );
+
+  const item = result.Item as MasterDataItem | undefined;
+  if (!item?.data) {
+    return createDefaultMasterData();
+  }
+  return normalizeMasterData(item.data);
+}
+
+export async function putMasterData(data: MasterData): Promise<void> {
+  if (!shiftTableName) {
+    throw new Error("SHIFT_TABLE_NAME is required");
+  }
+
+  await docClient.send(
+    new PutCommand({
+      TableName: shiftTableName,
+      Item: {
+        monthKey: masterDataKey,
+        data,
+        updatedAt: new Date().toISOString()
+      } satisfies MasterDataItem
     })
   );
 }

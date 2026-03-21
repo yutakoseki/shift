@@ -1,76 +1,39 @@
 "use client";
 
-import { useState } from "react";
-import { ShiftMonthResponse } from "@/types/shift";
-
-function currentMonth(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-}
+import Link from "next/link";
 
 export default function DataPage() {
-  const [month, setMonth] = useState(currentMonth);
-  const [loading, setLoading] = useState(false);
-  const [entries, setEntries] = useState<ShiftMonthResponse["entries"]>([]);
-  const [error, setError] = useState("");
-
-  async function fetchData(): Promise<void> {
-    setLoading(true);
-    setError("");
-    try {
-      const response = await fetch(`/api/shifts?month=${month}`);
-      if (!response.ok) {
-        throw new Error("データ取得に失敗しました。");
-      }
-      const data = (await response.json()) as ShiftMonthResponse;
-      setEntries(data.entries);
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "データ取得に失敗しました。");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const links = [
+    { href: "/data/full-time-staff", title: "常勤の先生管理", description: "名前・担当クラス・可能シフトパターン" },
+    {
+      href: "/data/part-time-staff",
+      title: "パートの先生管理",
+      description: "勤務条件（曜日・時間・週回数・可能シフトなど）"
+    },
+    { href: "/data/children", title: "園児管理", description: "名前・生年月日・登園曜日/時間（年齢自動計算）" },
+    { href: "/data/shift-patterns", title: "シフトパターン管理", description: "A1〜D4 とカスタムシフト" },
+    { href: "/data/child-ratios", title: "対人数（比率）管理", description: "0〜5歳児の比率（1/◯）" },
+    { href: "/data/classes", title: "クラス管理", description: "クラス名（ひよこ等）と対象年齢帯" }
+  ] as const;
 
   return (
-    <main className="space-y-4 p-4 md:p-6">
+    <main className="space-y-6 p-4 md:p-6">
       <section className="rounded-xl bg-white p-4 shadow-sm">
         <h1 className="text-2xl font-bold text-orange-900">データ管理</h1>
-        <p className="mt-1 text-sm text-orange-700">保存済みシフトデータを月単位で確認できます。</p>
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <label className="text-sm text-orange-900">
-            月:
-            <input
-              type="month"
-              className="ml-2 rounded-md bg-orange-50 px-2 py-1"
-              value={month}
-              onChange={(event) => setMonth(event.target.value)}
-            />
-          </label>
-          <button
-            className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-60"
-            onClick={() => void fetchData()}
-            disabled={loading}
-          >
-            {loading ? "読込中..." : "取得"}
-          </button>
-        </div>
+        <p className="mt-1 text-sm text-orange-700">項目を選んで個別管理ページへ移動してください。</p>
       </section>
 
-      {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p> : null}
-
-      <section className="rounded-xl bg-white p-4 shadow-sm">
-        <h2 className="text-lg font-semibold text-orange-900">データ一覧</h2>
-        {entries.length === 0 ? (
-          <p className="mt-2 text-sm text-orange-700">データがありません。月を選択して取得してください。</p>
-        ) : (
-          <ul className="mt-3 space-y-2 text-sm">
-            {entries.map((entry) => (
-              <li key={`${entry.date}-${entry.shiftType}`} className="rounded-md bg-orange-50 px-3 py-2 text-orange-900">
-                {entry.date} / {entry.shiftType} / {entry.staffName}
-              </li>
-            ))}
-          </ul>
-        )}
+      <section className="grid gap-3 md:grid-cols-2">
+        {links.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            className="rounded-xl border border-orange-200 bg-white p-4 shadow-sm transition hover:border-orange-300 hover:bg-orange-50"
+          >
+            <h2 className="text-lg font-semibold text-orange-900">{item.title}</h2>
+            <p className="mt-1 text-sm text-orange-700">{item.description}</p>
+          </Link>
+        ))}
       </section>
     </main>
   );
