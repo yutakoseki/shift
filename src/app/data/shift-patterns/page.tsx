@@ -178,6 +178,7 @@ export default function ShiftPatternsPage() {
               />
               <label className="flex items-center gap-2 text-sm text-orange-800 md:col-span-2">
                 <input
+                  className="orange-checkbox"
                   type="checkbox"
                   checked={pattern.isCustom}
                   disabled={role !== "管理者" || (persistedFlags[index] && editingIndex !== index)}

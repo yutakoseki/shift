@@ -42,11 +42,32 @@ function parseAgeGroupRange(ageGroup: string): { minAge: number; maxAge: number 
   return { minAge, maxAge };
 }
 
+function buildTimeOptions(startHour: number): string[] {
+  const toText = (totalMinutes: number): string => {
+    const hour = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
+    const minute = String(totalMinutes % 60).padStart(2, "0");
+    return `${hour}:${minute}`;
+  };
+
+  const startMinutes = startHour * 60;
+  const values: string[] = [];
+  for (let minutes = startMinutes; minutes < 24 * 60; minutes += 15) {
+    values.push(toText(minutes));
+  }
+  for (let minutes = 0; minutes < startMinutes; minutes += 15) {
+    values.push(toText(minutes));
+  }
+  return values;
+}
+
+const TIME_OPTIONS = buildTimeOptions(6);
+
 type ChildAttendanceRow = {
   id: string;
   name: string;
   classId: string;
   classLabel: string;
+  ageGroup: string;
   startTime: string;
   endTime: string;
   enabled: boolean;
@@ -54,10 +75,45 @@ type ChildAttendanceRow = {
   endMinutes: number;
 };
 
+function referenceWeekdayOrder(): number[] {
+  return [1, 2, 3, 4, 5, 6];
+}
+
+function normalizeAgeGroup(ageGroup: string): string {
+  if (ageGroup.includes("0-1")) {
+    return "0-1歳児";
+  }
+  if (ageGroup.includes("2-3")) {
+    return "2-3歳児";
+  }
+  if (ageGroup.includes("4-5")) {
+    return "4-5歳児";
+  }
+  return ageGroup || "その他";
+}
+
+function findReferenceAttendance(
+  attendanceByWeekday: ChildProfile["attendanceByWeekday"],
+  options?: { excludeWeekday?: number }
+): ChildProfile["attendanceByWeekday"][number] | null {
+  const excludeWeekday = options?.excludeWeekday;
+  for (const weekday of referenceWeekdayOrder()) {
+    if (excludeWeekday !== undefined && weekday === excludeWeekday) {
+      continue;
+    }
+    const found = attendanceByWeekday.find((slot) => slot.weekday === weekday && slot.enabled);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
 export default function ChildrenPage() {
   const [loading, setLoading] = useState(true);
   const [role, setRole] = useState<UserRole>("メンバー");
   const [persistedIds, setPersistedIds] = useState<string[]>([]);
+  const [expandedChildId, setExpandedChildId] = useState("");
   const [editingId, setEditingId] = useState("");
   const [actionLoadingId, setActionLoadingId] = useState("");
   const [actionLabel, setActionLabel] = useState("");
@@ -103,6 +159,7 @@ export default function ChildrenPage() {
         setPersistedIds((prev) => [...prev, target.id]);
       }
       setEditingId("");
+      setExpandedChildId("");
       showToast(persistedIds.includes(target.id) ? "更新しました" : "登録しました");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "登録/更新に失敗しました。");
@@ -134,6 +191,9 @@ export default function ChildrenPage() {
     try {
       await saveMasterData(nextData);
       setPersistedIds((prev) => prev.filter((id) => id !== target.id));
+      if (expandedChildId === target.id) {
+        setExpandedChildId("");
+      }
       showToast("削除しました");
     } catch (requestError) {
       setData(previousData);
@@ -174,40 +234,77 @@ export default function ChildrenPage() {
 
   const groupedRows = useMemo(() => {
     if (!data) {
-      return [] as { classKey: string; classLabel: string; rows: ChildAttendanceRow[] }[];
+      return [] as {
+        ageGroup: string;
+        classes: { classKey: string; classLabel: string; rows: ChildAttendanceRow[]; colorIndex: number }[];
+      }[];
     }
 
     const classOrder = new Map(data.nurseryClasses.map((classItem, index) => [classItem.id, index]));
-    const rows: ChildAttendanceRow[] = data.children.map((child) => {
+    const rows: ChildAttendanceRow[] = data.children
+      .filter((child) => persistedIds.includes(child.id))
+      .map((child) => {
       const attendance =
         child.attendanceByWeekday.find((slot) => slot.weekday === selectedWeekday) ?? createDefaultChildAttendance()[selectedWeekday];
       const classFromMaster = data.nurseryClasses.find((classItem) => classItem.id === child.classId);
       const classLabel = classFromMaster
         ? `${classFromMaster.name}${classFromMaster.ageGroup ? `（${classFromMaster.ageGroup}）` : ""}`
         : child.className || "クラス未設定";
+      const ageGroup = normalizeAgeGroup(classFromMaster?.ageGroup ?? "");
       return {
         id: child.id,
         name: child.name || "(未入力)",
         classId: child.classId,
         classLabel,
+        ageGroup,
         startTime: attendance.startTime,
         endTime: attendance.endTime,
         enabled: attendance.enabled,
         startMinutes: toMinutes(attendance.startTime),
         endMinutes: toMinutes(attendance.endTime)
       };
+    })
+      .filter((row) => row.enabled);
+
+    const grouped = new Map<string, { classKey: string; classLabel: string; rows: ChildAttendanceRow[]; colorIndex: number }>();
+
+    data.nurseryClasses.forEach((classItem, index) => {
+      grouped.set(classItem.id, {
+        classKey: classItem.id,
+        classLabel: `${classItem.name}${classItem.ageGroup ? `（${classItem.ageGroup}）` : ""}`,
+        ageGroup: normalizeAgeGroup(classItem.ageGroup),
+        rows: [],
+        colorIndex: index
+      });
     });
 
-    const grouped = new Map<string, { classKey: string; classLabel: string; rows: ChildAttendanceRow[] }>();
     rows.forEach((row) => {
       const classKey = row.classId || `name:${row.classLabel}`;
       if (!grouped.has(classKey)) {
-        grouped.set(classKey, { classKey, classLabel: row.classLabel, rows: [] });
+        grouped.set(classKey, {
+          classKey,
+          classLabel: row.classLabel,
+          ageGroup: row.ageGroup,
+          rows: [],
+          colorIndex: Number.MAX_SAFE_INTEGER
+        });
       }
       grouped.get(classKey)?.rows.push(row);
     });
 
-    return Array.from(grouped.values()).sort((a, b) => {
+    grouped.forEach((classGroup) => {
+      classGroup.rows.sort((a, b) => {
+        if (a.startMinutes !== b.startMinutes) {
+          return a.startMinutes - b.startMinutes;
+        }
+        if (a.endMinutes !== b.endMinutes) {
+          return a.endMinutes - b.endMinutes;
+        }
+        return a.name.localeCompare(b.name, "ja");
+      });
+    });
+
+    const sortedClasses = Array.from(grouped.values()).sort((a, b) => {
       const aOrder = a.classKey.startsWith("name:") ? Number.MAX_SAFE_INTEGER : (classOrder.get(a.classKey) ?? Number.MAX_SAFE_INTEGER);
       const bOrder = b.classKey.startsWith("name:") ? Number.MAX_SAFE_INTEGER : (classOrder.get(b.classKey) ?? Number.MAX_SAFE_INTEGER);
       if (aOrder !== bOrder) {
@@ -215,10 +312,27 @@ export default function ChildrenPage() {
       }
       return a.classLabel.localeCompare(b.classLabel, "ja");
     });
-  }, [data, selectedWeekday]);
+
+    const ageGroupOrder = ["0-1歳児", "2-3歳児", "4-5歳児", "その他"];
+    const groupedByAge = new Map<string, { ageGroup: string; classes: typeof sortedClasses }>();
+    sortedClasses.forEach((classGroup) => {
+      const key = ageGroupOrder.includes(classGroup.ageGroup) ? classGroup.ageGroup : "その他";
+      if (!groupedByAge.has(key)) {
+        groupedByAge.set(key, { ageGroup: key, classes: [] as typeof sortedClasses });
+      }
+      groupedByAge.get(key)?.classes.push(classGroup);
+    });
+
+    return ageGroupOrder
+      .filter((key) => groupedByAge.has(key))
+      .map((key) => groupedByAge.get(key)!)
+      .filter((item) => item.classes.length > 0);
+  }, [data, selectedWeekday, persistedIds]);
 
   const timelineSlots = useMemo(() => {
-    const enabledRows = groupedRows.flatMap((group) => group.rows).filter((row) => row.enabled);
+    const enabledRows = groupedRows
+      .flatMap((ageGroupBlock) => ageGroupBlock.classes.flatMap((classGroup) => classGroup.rows))
+      .filter((row) => row.enabled);
     const fallbackStart = 6 * 60;
     const fallbackEnd = 20 * 60;
     const rawStart = enabledRows.length > 0 ? Math.min(...enabledRows.map((row) => row.startMinutes)) : fallbackStart;
@@ -276,7 +390,8 @@ export default function ChildrenPage() {
           {role === "管理者" ? (
             <button
               className="rounded-md bg-orange-100 px-3 py-1 text-sm text-orange-700 hover:bg-orange-200"
-              onClick={() =>
+              onClick={() => {
+                setExpandedChildId("");
                 setData((prev) =>
                   prev
                     ? {
@@ -294,8 +409,8 @@ export default function ChildrenPage() {
                         ]
                       }
                     : prev
-                )
-              }
+                );
+              }}
             >
               追加
             </button>
@@ -306,7 +421,10 @@ export default function ChildrenPage() {
 
       <section className="rounded-xl bg-white p-4 shadow-sm">
         <div className="space-y-2">
-          {data.children.map((child, index) => (
+          {data.children
+            .map((child, index) => ({ child, index }))
+            .filter(({ child }) => !persistedIds.includes(child.id) || expandedChildId === child.id)
+            .map(({ child, index }) => (
             <div key={child.id} className="space-y-2 rounded-md bg-orange-50 p-3">
               <div className="grid gap-2 md:grid-cols-12">
                 <input
@@ -357,6 +475,14 @@ export default function ChildrenPage() {
                   {ageFromBirthDate(child.birthDate) === null ? "年齢: -" : `年齢: ${ageFromBirthDate(child.birthDate)}歳児`}
                 </p>
                 <div className="flex items-center justify-end gap-2 md:col-span-2">
+                  {persistedIds.includes(child.id) ? (
+                    <button
+                      className="rounded bg-orange-100 px-2 py-1 text-orange-700 hover:bg-orange-200"
+                      onClick={() => setExpandedChildId("")}
+                    >
+                      閉じる
+                    </button>
+                  ) : null}
                   {role === "管理者" ? (
                     <button
                       className="rounded bg-orange-500 px-2 py-1 text-white hover:bg-orange-600 disabled:opacity-60"
@@ -408,19 +534,34 @@ export default function ChildrenPage() {
                             type="checkbox"
                             checked={slot.enabled}
                             disabled={role !== "管理者" || (persistedIds.includes(child.id) && editingId !== child.id)}
-                            onChange={(event) =>
+                            onChange={(event) => {
+                              const checked = event.target.checked;
+                              const reference = findReferenceAttendance(child.attendanceByWeekday, {
+                                excludeWeekday: weekday.value
+                              });
+                              const nextAttendance = child.attendanceByWeekday.map((item) => {
+                                if (item.weekday !== weekday.value) {
+                                  return item;
+                                }
+                                if (!checked) {
+                                  return { ...item, enabled: false };
+                                }
+                                return {
+                                  ...item,
+                                  enabled: true,
+                                  startTime: reference?.startTime ?? item.startTime,
+                                  endTime: reference?.endTime ?? item.endTime
+                                };
+                              });
                               updateChild(index, {
-                                attendanceByWeekday: child.attendanceByWeekday.map((item) =>
-                                  item.weekday === weekday.value ? { ...item, enabled: event.target.checked } : item
-                                )
-                              })
-                            }
+                                attendanceByWeekday: nextAttendance
+                              });
+                            }}
                           />
                           {weekday.label}
                         </label>
-                        <input
+                        <select
                           className="rounded bg-white px-2 py-1 text-sm"
-                          type="time"
                           value={slot.startTime}
                           disabled={!slot.enabled || role !== "管理者" || (persistedIds.includes(child.id) && editingId !== child.id)}
                           onChange={(event) =>
@@ -430,11 +571,16 @@ export default function ChildrenPage() {
                               )
                             })
                           }
-                        />
+                        >
+                          {TIME_OPTIONS.map((time) => (
+                            <option key={`start-${weekday.value}-${time}`} value={time}>
+                              {time}
+                            </option>
+                          ))}
+                        </select>
                         <span className="text-sm text-orange-700">-</span>
-                        <input
+                        <select
                           className="rounded bg-white px-2 py-1 text-sm"
-                          type="time"
                           value={slot.endTime}
                           disabled={!slot.enabled || role !== "管理者" || (persistedIds.includes(child.id) && editingId !== child.id)}
                           onChange={(event) =>
@@ -444,7 +590,13 @@ export default function ChildrenPage() {
                               )
                             })
                           }
-                        />
+                        >
+                          {TIME_OPTIONS.map((time) => (
+                            <option key={`end-${weekday.value}-${time}`} value={time}>
+                              {time}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     );
                   })}
@@ -479,19 +631,19 @@ export default function ChildrenPage() {
               <tr className="bg-orange-100/60">
                 <th
                   rowSpan={2}
-                  className="sticky left-0 z-20 w-24 min-w-24 border border-orange-200 bg-orange-100 px-1 py-1 text-left align-middle"
+                  className="sticky left-0 z-20 w-24 min-w-24 border border-white bg-orange-100 px-1 py-1 text-left align-middle"
                 >
                   園児名
                 </th>
                 <th
                   rowSpan={2}
-                  className="sticky left-[96px] z-20 w-12 min-w-12 border border-orange-200 bg-orange-100 px-1 py-1 text-left align-middle"
+                  className="sticky left-[96px] z-20 w-12 min-w-12 border border-white bg-orange-100 px-1 py-1 text-left align-middle"
                 >
                   登園
                 </th>
                 <th
                   rowSpan={2}
-                  className="sticky left-[144px] z-20 w-12 min-w-12 border border-orange-200 bg-orange-100 px-1 py-1 text-left align-middle"
+                  className="sticky left-[144px] z-20 w-12 min-w-12 border border-white bg-orange-100 px-1 py-1 text-left align-middle"
                 >
                   降園
                 </th>
@@ -499,7 +651,7 @@ export default function ChildrenPage() {
                   <th
                     key={`hour-${group.hour}`}
                     colSpan={group.count}
-                    className="border border-orange-200 px-0.5 py-0.5 text-center text-[8px] text-orange-800"
+                    className="border border-white px-0.5 py-0.5 text-center text-[8px] text-orange-800"
                   >
                     {group.hour}時
                   </th>
@@ -507,49 +659,79 @@ export default function ChildrenPage() {
               </tr>
               <tr className="bg-orange-100/60">
                 {timelineSlots.map((slot) => (
-                  <th key={`minute-${slot}`} className="w-3 min-w-3 border border-orange-200 px-0 py-0.5 text-center text-[7px] text-orange-800">
+                  <th key={`minute-${slot}`} className="w-3 min-w-3 border border-white px-0 py-0.5 text-center text-[7px] text-orange-800">
                     {String(slot % 60).padStart(2, "0")}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {groupedRows.map((group, groupIndex) => {
-                const bandColors = ["bg-fuchsia-200", "bg-sky-200", "bg-lime-300", "bg-orange-200"];
-                const bandColor = bandColors[groupIndex % bandColors.length];
-                return (
-                  <Fragment key={`group-fragment-${group.classKey}`}>
-                    <tr className={bandColor}>
-                      <td colSpan={timelineSlots.length + 3} className="border border-orange-200 px-1 py-1 text-center font-bold text-orange-950">
-                        {group.classLabel}
-                      </td>
-                    </tr>
-                    {group.rows.map((row) => (
-                      <tr key={`table-${row.id}`} className="odd:bg-orange-50/30">
-                        <td className="sticky left-0 w-24 min-w-24 border border-orange-200 bg-white px-1 py-1 font-medium text-orange-900">
-                          {row.name}
-                        </td>
-                        <td className="sticky left-[96px] w-12 min-w-12 border border-orange-200 bg-white px-1 py-1 text-orange-800">
-                          {row.enabled ? row.startTime : "-"}
-                        </td>
-                        <td className="sticky left-[144px] w-12 min-w-12 border border-orange-200 bg-white px-1 py-1 text-orange-800">
-                          {row.enabled ? row.endTime : "-"}
-                        </td>
-                        {timelineSlots.map((slot) => {
-                          const active = row.enabled && slot >= row.startMinutes && slot < row.endMinutes;
-                          return (
-                            <td
-                              key={`${row.id}-${slot}`}
-                              className={`h-4 w-3 min-w-3 border border-orange-200 ${active ? "bg-emerald-300" : "bg-white"}`}
-                              title={active ? "在園" : "在園外"}
-                            />
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </Fragment>
-                );
-              })}
+              {groupedRows.map((ageGroupBlock) => (
+                <Fragment key={`age-group-${ageGroupBlock.ageGroup}`}>
+                  <tr className="bg-orange-100">
+                    <td colSpan={timelineSlots.length + 3} className="border border-white px-1 py-1 text-center text-[10px] font-bold text-orange-950">
+                      {ageGroupBlock.ageGroup}クラス
+                    </td>
+                  </tr>
+                  {ageGroupBlock.classes.map((group) => {
+                    const palettes = [
+                      { band: "bg-fuchsia-200", cell: "bg-fuchsia-200" },
+                      { band: "bg-sky-200", cell: "bg-sky-200" },
+                      { band: "bg-lime-300", cell: "bg-lime-300" },
+                      { band: "bg-orange-200", cell: "bg-orange-200" }
+                    ];
+                    const palette = palettes[group.colorIndex % palettes.length];
+                    return (
+                      <Fragment key={`group-fragment-${group.classKey}`}>
+                        <tr className={palette.band}>
+                          <td colSpan={timelineSlots.length + 3} className="border border-white px-1 py-1 text-center font-bold text-orange-950">
+                            {group.classLabel}
+                          </td>
+                        </tr>
+                        {group.rows.map((row) => (
+                          <tr key={`table-${row.id}`} className="odd:bg-orange-50/30">
+                            <td className="sticky left-0 w-24 min-w-24 border border-white bg-white px-1 py-1 font-medium text-orange-900">
+                              <button
+                                className="w-full truncate text-left text-orange-900 hover:underline"
+                                onClick={() => setExpandedChildId((prev) => (prev === row.id ? "" : row.id))}
+                                title="クリックで編集フォームを表示"
+                              >
+                                {row.name}
+                              </button>
+                            </td>
+                            <td className="sticky left-[96px] w-12 min-w-12 border border-white bg-white px-1 py-1 text-orange-800">
+                              {row.enabled ? row.startTime : "-"}
+                            </td>
+                            <td className="sticky left-[144px] w-12 min-w-12 border border-white bg-white px-1 py-1 text-orange-800">
+                              {row.enabled ? row.endTime : "-"}
+                            </td>
+                            {timelineSlots.map((slot) => {
+                              const active = row.enabled && slot >= row.startMinutes && slot < row.endMinutes;
+                              return (
+                                <td
+                                  key={`${row.id}-${slot}`}
+                                  className={`h-4 w-3 min-w-3 border border-white ${active ? palette.cell : "bg-white"}`}
+                                  title={active ? "在園" : "在園外"}
+                                />
+                              );
+                            })}
+                          </tr>
+                        ))}
+                        {group.rows.length === 0 ? (
+                          <tr className="bg-white">
+                            <td className="sticky left-0 w-24 min-w-24 border border-white bg-white px-1 py-1 text-orange-500">-</td>
+                            <td className="sticky left-[96px] w-12 min-w-12 border border-white bg-white px-1 py-1 text-orange-500">-</td>
+                            <td className="sticky left-[144px] w-12 min-w-12 border border-white bg-white px-1 py-1 text-orange-500">-</td>
+                            {timelineSlots.map((slot) => (
+                              <td key={`empty-${group.classKey}-${slot}`} className="h-4 w-3 min-w-3 border border-white bg-white" />
+                            ))}
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    );
+                  })}
+                </Fragment>
+              ))}
             </tbody>
           </table>
         </div>
