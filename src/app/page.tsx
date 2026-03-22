@@ -454,7 +454,7 @@ export default function HomePage() {
                                   }))
                                 }
                               >
-                                <option value="">未割当</option>
+                                <option value="" />
                                 {allStaffNames.map((name) => (
                                   <option key={name} value={name}>
                                     {name}
