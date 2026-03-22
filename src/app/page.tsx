@@ -429,7 +429,10 @@ export default function HomePage() {
                     const dateTextClass = weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
 
                     const classRows = SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => (
-                      <tr key={`${date}-${classGroup.key}`} className={classIndex === 1 ? "bg-orange-50/50" : undefined}>
+                      <tr
+                        key={`${date}-${classGroup.key}`}
+                        className={classIndex === 0 ? "border-t-2 border-orange-200" : undefined}
+                      >
                         {classIndex === 0 ? (
                           <td rowSpan={DATE_GROUP_ROW_COUNT} className={`px-3 py-2 text-center align-middle ${dateTextClass}`}>
                             {dateText}
@@ -466,7 +469,7 @@ export default function HomePage() {
                     ));
 
                     const totalRow = (
-                      <tr key={`${date}-total`} className="bg-orange-100/40">
+                      <tr key={`${date}-total`} className="border-b-2 border-orange-200 bg-orange-100/40">
                         <td className="whitespace-nowrap px-3 py-2 font-semibold text-orange-900">合計（対人数）</td>
                         {shiftTypes.map((shiftType) => (
                           <td key={`total-${date}-${shiftType}`} className="px-3 py-2 text-center text-xs text-orange-500" />
@@ -506,7 +509,10 @@ export default function HomePage() {
                       ...SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => {
                         const counts = assignedStaffCountByDateAndClass.get(`${date}|${classGroup.key}`) ?? REQUIRED_STAFF_TIMES.map(() => 0);
                         return (
-                          <tr key={`assigned-${date}-${classGroup.key}`} className={classIndex === 1 ? "bg-orange-50/50" : undefined}>
+                          <tr
+                            key={`assigned-${date}-${classGroup.key}`}
+                            className={classIndex === 0 ? "border-t-2 border-orange-200" : undefined}
+                          >
                             {counts.map((count, index) => (
                               <td
                                 key={`${date}-${classGroup.key}-${REQUIRED_STAFF_TIMES[index]}`}
@@ -518,7 +524,7 @@ export default function HomePage() {
                           </tr>
                         );
                       }),
-                      <tr key={`assigned-${date}-total`} className="bg-orange-100/40">
+                      <tr key={`assigned-${date}-total`} className="border-b-2 border-orange-200 bg-orange-100/40">
                         {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, index) => (
                           <td key={`${date}-total-${REQUIRED_STAFF_TIMES[index]}`} className="whitespace-nowrap px-3 py-2 font-semibold text-orange-900">
                             {count}人
