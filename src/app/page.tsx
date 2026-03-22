@@ -1030,66 +1030,107 @@ export default function HomePage() {
                 </table>
               </div>
             ) : (
-              <table className="min-w-full text-sm">
-                <thead className="bg-orange-100/70">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-semibold text-orange-900">日付</th>
-                    {allStaffNames.map((name, index) => (
-                      <th
-                        key={`${name}-${index}`}
-                        className={`whitespace-nowrap px-3 py-2 text-center font-semibold text-orange-900 ${headerStripeClass(index)}`}
-                      >
-                        {name}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {dates.map((date) => {
-                    const weekday = weekdayFromDateText(date);
-                    const dateText = `${dayLabelFromDateText(date)} (${WEEKDAY_LABELS[weekday]})`;
-                    const dateTextClass = weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
-                    const rowMap = shiftCodesByDateAndStaff.get(date) ?? new Map<string, string>();
-                    const assignmentMap = primaryAssignmentByDateAndStaff.get(date) ?? new Map<string, { shiftType: string; classGroup: ShiftClassGroup; count: number }>();
-                    return (
-                      <tr key={`staff-view-${date}`} className="border-t border-orange-100 odd:bg-orange-50/30">
-                        <td className={`whitespace-nowrap px-3 py-2 text-center font-semibold ${dateTextClass}`}>{dateText}</td>
-                        {allStaffNames.map((name, index) => {
-                          const assignment = assignmentMap.get(name);
-                          const offKey = `${date}|${name}`;
-                          const currentShiftType = offByDateAndStaff[offKey] ? "__OFF__" : assignment?.shiftType ?? "";
-                          const selectable = selectableShiftTypesForStaffView.filter(
-                            (shiftType) => shiftType === currentShiftType || canWorkOnShift(date, shiftType, name)
-                          );
-                          return (
+              <div className="flex min-w-max items-start">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-orange-100/70">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold text-orange-900">日付</th>
+                      {allStaffNames.map((name, index) => (
+                        <th
+                          key={`${name}-${index}`}
+                          className={`whitespace-nowrap px-3 py-2 text-center font-semibold text-orange-900 ${headerStripeClass(index)}`}
+                        >
+                          {name}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dates.map((date) => {
+                      const weekday = weekdayFromDateText(date);
+                      const dateText = `${dayLabelFromDateText(date)} (${WEEKDAY_LABELS[weekday]})`;
+                      const dateTextClass = weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
+                      const rowMap = shiftCodesByDateAndStaff.get(date) ?? new Map<string, string>();
+                      const assignmentMap = primaryAssignmentByDateAndStaff.get(date) ?? new Map<string, { shiftType: string; classGroup: ShiftClassGroup; count: number }>();
+                      return (
+                        <tr key={`staff-view-${date}`} className="border-t border-orange-100 odd:bg-orange-50/30">
+                          <td className={`whitespace-nowrap px-3 py-2 text-center font-semibold ${dateTextClass}`}>{dateText}</td>
+                          {allStaffNames.map((name, index) => {
+                            const assignment = assignmentMap.get(name);
+                            const offKey = `${date}|${name}`;
+                            const currentShiftType = offByDateAndStaff[offKey] ? "__OFF__" : assignment?.shiftType ?? "";
+                            const selectable = selectableShiftTypesForStaffView.filter(
+                              (shiftType) => shiftType === currentShiftType || canWorkOnShift(date, shiftType, name)
+                            );
+                            return (
+                              <td
+                                key={`staff-view-${date}-${name}-${index}`}
+                                className={`whitespace-nowrap px-3 py-2 text-center text-orange-900 ${bodyStripeClass(index)}`}
+                              >
+                                <select
+                                  className="w-full rounded bg-white px-2 py-1 text-sm outline-none focus:bg-orange-50"
+                                  value={currentShiftType}
+                                  onChange={(event) => setStaffShiftForDate(date, name, event.target.value)}
+                                >
+                                  <option value="" />
+                                  <option value="__OFF__">休み</option>
+                                  {selectable.map((shiftType) => (
+                                    <option key={`${date}-${name}-${shiftType}`} value={shiftType}>
+                                      {shiftType}
+                                    </option>
+                                  ))}
+                                </select>
+                                {assignment && assignment.count > 1 ? (
+                                  <p className="mt-1 text-[10px] text-red-600">{rowMap.get(name)}</p>
+                                ) : null}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+
+                <table className="border-l border-orange-200 text-sm">
+                  <tbody>
+                    <tr className="h-[26px] bg-orange-100/70">
+                      {requiredStaffByTime.map((item, columnIndex) => (
+                        <th
+                          key={`staff-required-time-${item.time}`}
+                          className={`h-[26px] whitespace-nowrap px-3 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
+                        >
+                          {item.time}
+                        </th>
+                      ))}
+                    </tr>
+                    <tr className="h-[26px]">
+                      {requiredStaffByTime.map((item, columnIndex) => (
+                        <td
+                          key={`staff-required-count-${item.time}`}
+                          className={`h-[26px] whitespace-nowrap px-3 py-0 align-middle font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
+                        >
+                          {item.requiredCount}人
+                        </td>
+                      ))}
+                    </tr>
+                    {dates.map((date) => (
+                      <tr key={`staff-total-${date}`} className="border-t border-orange-100 odd:bg-orange-50/30">
+                        {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
                           <td
-                            key={`staff-view-${date}-${name}-${index}`}
-                            className={`whitespace-nowrap px-3 py-2 text-center text-orange-900 ${bodyStripeClass(index)}`}
+                            key={`staff-total-${date}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
+                            className={`whitespace-nowrap px-3 py-2 font-semibold ${
+                              count < (requiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
+                            } ${bodyStripeClass(columnIndex)}`}
                           >
-                            <select
-                              className="w-full rounded bg-white px-2 py-1 text-sm outline-none focus:bg-orange-50"
-                              value={currentShiftType}
-                              onChange={(event) => setStaffShiftForDate(date, name, event.target.value)}
-                            >
-                              <option value="" />
-                              <option value="__OFF__">休み</option>
-                              {selectable.map((shiftType) => (
-                                <option key={`${date}-${name}-${shiftType}`} value={shiftType}>
-                                  {shiftType}
-                                </option>
-                              ))}
-                            </select>
-                            {assignment && assignment.count > 1 ? (
-                              <p className="mt-1 text-[10px] text-red-600">{rowMap.get(name)}</p>
-                            ) : null}
+                            {count}人
                           </td>
-                          );
-                        })}
+                        ))}
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </section>
