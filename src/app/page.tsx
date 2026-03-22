@@ -5,6 +5,22 @@ import { MasterData, PartTimeStaff } from "@/types/master-data";
 import { ShiftEntry, ShiftMonthResponse } from "@/types/shift";
 import FullscreenLoading from "@/components/fullscreen-loading";
 
+const REQUIRED_STAFF_TIMES = [
+  "06:00",
+  "06:30",
+  "07:00",
+  "07:30",
+  "08:00",
+  "08:30",
+  "09:00",
+  "16:00",
+  "16:30",
+  "17:00",
+  "17:30",
+  "18:00",
+  "18:30"
+] as const;
+
 function monthToDates(month: string): string[] {
   const [yearText, monthText] = month.split("-");
   const year = Number(yearText);
@@ -29,6 +45,54 @@ function keyOf(date: string, shiftType: string): string {
 function timeToMinutes(value: string): number {
   const [h, m] = value.split(":").map(Number);
   return h * 60 + m;
+}
+
+function ageAtMonthStart(birthDate: string, month: string): number | null {
+  if (!birthDate) {
+    return null;
+  }
+  const birth = new Date(birthDate);
+  if (Number.isNaN(birth.getTime())) {
+    return null;
+  }
+
+  const [yearText, monthText] = month.split("-");
+  const year = Number(yearText);
+  const monthNumber = Number(monthText);
+  if (!Number.isFinite(year) || !Number.isFinite(monthNumber)) {
+    return null;
+  }
+  const reference = new Date(year, monthNumber - 1, 1);
+
+  let age = reference.getFullYear() - birth.getFullYear();
+  const monthDiff = reference.getMonth() - birth.getMonth();
+  const dayDiff = reference.getDate() - birth.getDate();
+  if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) {
+    age -= 1;
+  }
+  return Math.max(age, 0);
+}
+
+function resolveRatioForAge(age: number, ratioByAge: Map<number, number>): number | null {
+  if (ratioByAge.has(age)) {
+    return ratioByAge.get(age) ?? null;
+  }
+  const ages = Array.from(ratioByAge.keys()).sort((a, b) => a - b);
+  if (ages.length === 0) {
+    return null;
+  }
+  if (age < ages[0]) {
+    return ratioByAge.get(ages[0]) ?? null;
+  }
+  if (age > ages[ages.length - 1]) {
+    return ratioByAge.get(ages[ages.length - 1]) ?? null;
+  }
+  for (let index = ages.length - 1; index >= 0; index -= 1) {
+    if (ages[index] <= age) {
+      return ratioByAge.get(ages[index]) ?? null;
+    }
+  }
+  return null;
 }
 
 export default function HomePage() {
@@ -65,6 +129,87 @@ export default function HomePage() {
   const shiftPatternByCode = useMemo(() => {
     return new Map(shiftPatterns.map((pattern) => [pattern.code, pattern]));
   }, [shiftPatterns]);
+
+  const requiredStaffByTime = useMemo(() => {
+    if (!masterData) {
+      return REQUIRED_STAFF_TIMES.map((time) => ({ time, requiredCount: 0 }));
+    }
+
+    const ratioByAge = new Map(
+      masterData.childRatios
+        .filter((item) => Number.isFinite(item.age) && Number.isFinite(item.ratio) && item.ratio > 0)
+        .map((item) => [item.age, item.ratio])
+    );
+
+    return REQUIRED_STAFF_TIMES.map((time) => {
+      const targetMinutes = timeToMinutes(time);
+      let maxRequiredCount = 0;
+
+      for (let weekday = 0; weekday <= 6; weekday += 1) {
+        const childCountByAge = new Map<number, number>();
+
+        for (const child of masterData.children) {
+          const age = ageAtMonthStart(child.birthDate, month);
+          if (age === null) {
+            continue;
+          }
+          const attendance = child.attendanceByWeekday.find((slot) => slot.weekday === weekday);
+          if (!attendance || !attendance.enabled) {
+            continue;
+          }
+          const startMinutes = timeToMinutes(attendance.startTime);
+          const endMinutes = timeToMinutes(attendance.endTime);
+          if (targetMinutes < startMinutes || targetMinutes >= endMinutes) {
+            continue;
+          }
+          childCountByAge.set(age, (childCountByAge.get(age) ?? 0) + 1);
+        }
+
+        let requiredCountForWeekday = 0;
+        childCountByAge.forEach((childCount, age) => {
+          const ratio = resolveRatioForAge(age, ratioByAge);
+          if (!ratio || ratio <= 0) {
+            return;
+          }
+          requiredCountForWeekday += Math.ceil(childCount / ratio);
+        });
+
+        if (requiredCountForWeekday > maxRequiredCount) {
+          maxRequiredCount = requiredCountForWeekday;
+        }
+      }
+
+      return { time, requiredCount: maxRequiredCount };
+    });
+  }, [masterData, month]);
+
+  const assignedStaffCountByDate = useMemo(() => {
+    const countByDate = new Map<string, number[]>();
+    for (const date of dates) {
+      const counts = REQUIRED_STAFF_TIMES.map((time) => {
+        const targetMinutes = timeToMinutes(time);
+        const presentStaff = new Set<string>();
+        for (const shiftType of shiftTypes) {
+          const staffName = (cells[keyOf(date, shiftType)] ?? "").trim();
+          if (!staffName) {
+            continue;
+          }
+          const pattern = shiftPatternByCode.get(shiftType);
+          if (!pattern) {
+            continue;
+          }
+          const startMinutes = timeToMinutes(pattern.startTime);
+          const endMinutes = timeToMinutes(pattern.endTime);
+          if (targetMinutes >= startMinutes && targetMinutes < endMinutes) {
+            presentStaff.add(staffName);
+          }
+        }
+        return presentStaff.size;
+      });
+      countByDate.set(date, counts);
+    }
+    return countByDate;
+  }, [cells, dates, shiftPatternByCode, shiftTypes]);
 
   const loadMonth = useCallback(async () => {
     setLoadingData(true);
@@ -199,57 +344,101 @@ export default function HomePage() {
         </div>
         </section>
 
-        <section className="overflow-auto rounded-xl bg-white shadow-sm">
-          <table className="min-w-full text-sm">
-          <thead className="bg-orange-100/70">
-            <tr>
-              <th className="px-3 py-2 text-left font-semibold text-orange-900">日付</th>
-              {shiftTypes.map((type) => (
-                <th key={type} className="px-3 py-2 text-left font-semibold text-orange-900">
-                  <div>{type}</div>
-                  {shiftPatternByCode.get(type) ? (
-                    <div className="text-xs font-normal text-orange-700">
-                      {shiftPatternByCode.get(type)?.startTime} - {shiftPatternByCode.get(type)?.endTime}
-                    </div>
-                  ) : null}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {dates.map((date) => (
-              <tr key={date} className="odd:bg-orange-50/50">
-                <td className="px-3 py-2 text-orange-900">{date}</td>
-                {shiftTypes.map((shiftType) => {
-                  const key = keyOf(date, shiftType);
-                  const warnings = ruleWarnings(date, shiftType, cells[key] ?? "");
-                  return (
-                    <td key={shiftType} className="p-1">
-                      <select
-                        className="w-full rounded bg-white px-2 py-1 outline-none focus:bg-orange-50"
-                        value={cells[key] ?? ""}
-                        onChange={(event) =>
-                          setCells((prev) => ({
-                            ...prev,
-                            [key]: event.target.value
-                          }))
-                        }
+        <section className="rounded-xl bg-white p-4 shadow-sm">
+          <p className="text-sm text-orange-700">
+            必要先生人数は、各時刻について曜日別に算出した人数の最大値を表示しています。
+          </p>
+          <div className="mt-3 overflow-auto">
+            <div className="flex min-w-max items-start">
+              <table className="text-sm">
+                <thead className="bg-orange-100/70">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-semibold text-orange-900">日付</th>
+                    {shiftTypes.map((type) => (
+                      <th key={type} className="px-3 py-2 text-left font-semibold text-orange-900">
+                        <div>{type}</div>
+                        {shiftPatternByCode.get(type) ? (
+                          <div className="text-xs font-normal text-orange-700">
+                            {shiftPatternByCode.get(type)?.startTime} - {shiftPatternByCode.get(type)?.endTime}
+                          </div>
+                        ) : null}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {dates.map((date) => (
+                    <tr key={date} className="odd:bg-orange-50/50">
+                      <td className="px-3 py-2 text-orange-900">{date}</td>
+                      {shiftTypes.map((shiftType) => {
+                        const key = keyOf(date, shiftType);
+                        const warnings = ruleWarnings(date, shiftType, cells[key] ?? "");
+                        return (
+                          <td key={shiftType} className="p-1">
+                            <select
+                              className="w-full rounded bg-white px-2 py-1 outline-none focus:bg-orange-50"
+                              value={cells[key] ?? ""}
+                              onChange={(event) =>
+                                setCells((prev) => ({
+                                  ...prev,
+                                  [key]: event.target.value
+                                }))
+                              }
+                            >
+                              <option value="">未割当</option>
+                              {allStaffNames.map((name) => (
+                                <option key={name} value={name}>
+                                  {name}
+                                </option>
+                              ))}
+                            </select>
+                            {warnings.length > 0 ? <p className="mt-1 text-xs text-red-600">{warnings.join(" / ")}</p> : null}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <table className="border-l border-orange-200 text-sm">
+                <tbody>
+                  <tr className="h-[26px] bg-orange-100/70">
+                    {requiredStaffByTime.map((item) => (
+                      <th
+                        key={item.time}
+                        className="h-[26px] whitespace-nowrap px-3 py-0 text-left align-middle font-semibold text-orange-900"
                       >
-                        <option value="">未割当</option>
-                        {allStaffNames.map((name) => (
-                          <option key={name} value={name}>
-                            {name}
-                          </option>
+                        {item.time}
+                      </th>
+                    ))}
+                  </tr>
+                  <tr className="h-[26px] odd:bg-orange-50/50">
+                    {requiredStaffByTime.map((item) => (
+                      <td
+                        key={`required-${item.time}`}
+                        className="h-[26px] whitespace-nowrap px-3 py-0 align-middle font-semibold text-orange-900"
+                      >
+                        {item.requiredCount}人
+                      </td>
+                    ))}
+                  </tr>
+                  {dates.map((date) => {
+                    const counts = assignedStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
+                    return (
+                      <tr key={`assigned-${date}`} className="odd:bg-orange-50/50">
+                        {counts.map((count, index) => (
+                          <td key={`${date}-${REQUIRED_STAFF_TIMES[index]}`} className="whitespace-nowrap px-3 py-2 text-orange-900">
+                            {count}人
+                          </td>
                         ))}
-                      </select>
-                      {warnings.length > 0 ? <p className="mt-1 text-xs text-red-600">{warnings.join(" / ")}</p> : null}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-          </table>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </section>
       </main>
     </>
