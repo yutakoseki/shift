@@ -423,10 +423,10 @@ export default function HomePage() {
                     <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">日付</th>
                     <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">クラス区分</th>
                     {shiftTypes.map((type, columnIndex) => (
-                      <th key={type} className={`px-3 py-2 text-left font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}>
-                        <div>{type}</div>
+                      <th key={type} className={`px-3 py-2 text-center font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}>
+                        <div className="text-center">{type}</div>
                         {shiftPatternByCode.get(type) ? (
-                          <div className="text-xs font-normal text-orange-700">
+                          <div className="text-center text-xs font-normal text-orange-700">
                             {shiftPatternByCode.get(type)?.startTime} - {shiftPatternByCode.get(type)?.endTime}
                           </div>
                         ) : null}
