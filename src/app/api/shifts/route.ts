@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getShiftMonth, putShiftMonth } from "@/lib/dynamodb";
-import { ShiftEntry } from "@/types/shift";
+import { SHIFT_CLASS_GROUPS, ShiftEntry } from "@/types/shift";
 
 function validateMonth(month: string | null): month is string {
   if (!month) {
@@ -10,10 +10,12 @@ function validateMonth(month: string | null): month is string {
 }
 
 function isValidEntry(entry: ShiftEntry): boolean {
+  const allowedClassGroups = SHIFT_CLASS_GROUPS.map((group) => group.key);
   return (
     /^\d{4}-\d{2}-\d{2}$/.test(entry.date) &&
     typeof entry.shiftType === "string" &&
     entry.shiftType.trim().length > 0 &&
+    (entry.classGroup === undefined || allowedClassGroups.includes(entry.classGroup)) &&
     typeof entry.staffName === "string"
   );
 }

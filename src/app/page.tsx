@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MasterData, PartTimeStaff } from "@/types/master-data";
-import { ShiftEntry, ShiftMonthResponse } from "@/types/shift";
+import { SHIFT_CLASS_GROUPS, ShiftClassGroup, ShiftEntry, ShiftMonthResponse } from "@/types/shift";
 import FullscreenLoading from "@/components/fullscreen-loading";
 
 const REQUIRED_STAFF_TIMES = [
@@ -22,6 +22,7 @@ const REQUIRED_STAFF_TIMES = [
 ] as const;
 
 const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"] as const;
+const DATE_GROUP_ROW_COUNT = SHIFT_CLASS_GROUPS.length + 1;
 
 function monthToDates(month: string): string[] {
   const [yearText, monthText] = month.split("-");
@@ -40,8 +41,8 @@ function currentMonth(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function keyOf(date: string, shiftType: string): string {
-  return `${date}|${shiftType}`;
+function keyOf(date: string, shiftType: string, classGroup: ShiftClassGroup): string {
+  return `${date}|${classGroup}|${shiftType}`;
 }
 
 function timeToMinutes(value: string): number {
@@ -202,25 +203,57 @@ export default function HomePage() {
     });
   }, [masterData, month]);
 
-  const assignedStaffCountByDate = useMemo(() => {
+  const assignedStaffCountByDateAndClass = useMemo(() => {
+    const countByDateAndClass = new Map<string, number[]>();
+    for (const date of dates) {
+      for (const classGroup of SHIFT_CLASS_GROUPS) {
+        const counts = REQUIRED_STAFF_TIMES.map((time) => {
+          const targetMinutes = timeToMinutes(time);
+          const presentStaff = new Set<string>();
+          for (const shiftType of shiftTypes) {
+            const staffName = (cells[keyOf(date, shiftType, classGroup.key)] ?? "").trim();
+            if (!staffName) {
+              continue;
+            }
+            const pattern = shiftPatternByCode.get(shiftType);
+            if (!pattern) {
+              continue;
+            }
+            const startMinutes = timeToMinutes(pattern.startTime);
+            const endMinutes = timeToMinutes(pattern.endTime);
+            if (targetMinutes >= startMinutes && targetMinutes < endMinutes) {
+              presentStaff.add(staffName);
+            }
+          }
+          return presentStaff.size;
+        });
+        countByDateAndClass.set(`${date}|${classGroup.key}`, counts);
+      }
+    }
+    return countByDateAndClass;
+  }, [cells, dates, shiftPatternByCode, shiftTypes]);
+
+  const assignedTotalStaffCountByDate = useMemo(() => {
     const countByDate = new Map<string, number[]>();
     for (const date of dates) {
       const counts = REQUIRED_STAFF_TIMES.map((time) => {
         const targetMinutes = timeToMinutes(time);
         const presentStaff = new Set<string>();
-        for (const shiftType of shiftTypes) {
-          const staffName = (cells[keyOf(date, shiftType)] ?? "").trim();
-          if (!staffName) {
-            continue;
-          }
-          const pattern = shiftPatternByCode.get(shiftType);
-          if (!pattern) {
-            continue;
-          }
-          const startMinutes = timeToMinutes(pattern.startTime);
-          const endMinutes = timeToMinutes(pattern.endTime);
-          if (targetMinutes >= startMinutes && targetMinutes < endMinutes) {
-            presentStaff.add(staffName);
+        for (const classGroup of SHIFT_CLASS_GROUPS) {
+          for (const shiftType of shiftTypes) {
+            const staffName = (cells[keyOf(date, shiftType, classGroup.key)] ?? "").trim();
+            if (!staffName) {
+              continue;
+            }
+            const pattern = shiftPatternByCode.get(shiftType);
+            if (!pattern) {
+              continue;
+            }
+            const startMinutes = timeToMinutes(pattern.startTime);
+            const endMinutes = timeToMinutes(pattern.endTime);
+            if (targetMinutes >= startMinutes && targetMinutes < endMinutes) {
+              presentStaff.add(staffName);
+            }
           }
         }
         return presentStaff.size;
@@ -240,7 +273,8 @@ export default function HomePage() {
       const data = (await response.json()) as ShiftMonthResponse;
       const nextCells: Record<string, string> = {};
       data.entries.forEach((entry) => {
-        nextCells[keyOf(entry.date, entry.shiftType)] = entry.staffName;
+        const classGroup = entry.classGroup ?? "0-1";
+        nextCells[keyOf(entry.date, entry.shiftType, classGroup)] = entry.staffName;
       });
       setCells(nextCells);
     } finally {
@@ -257,10 +291,12 @@ export default function HomePage() {
     try {
       const entries: ShiftEntry[] = [];
       for (const date of dates) {
-        for (const shiftType of shiftTypes) {
-          const staffName = (cells[keyOf(date, shiftType)] ?? "").trim();
-          if (staffName.length > 0) {
-            entries.push({ date, shiftType, staffName });
+        for (const classGroup of SHIFT_CLASS_GROUPS) {
+          for (const shiftType of shiftTypes) {
+            const staffName = (cells[keyOf(date, shiftType, classGroup.key)] ?? "").trim();
+            if (staffName.length > 0) {
+              entries.push({ date, classGroup: classGroup.key, shiftType, staffName });
+            }
           }
         }
       }
@@ -373,6 +409,7 @@ export default function HomePage() {
                 <thead className="bg-orange-100/70">
                   <tr>
                     <th className="px-3 py-2 text-left font-semibold text-orange-900">日付</th>
+                    <th className="px-3 py-2 text-left font-semibold text-orange-900">クラス区分</th>
                     {shiftTypes.map((type) => (
                       <th key={type} className="px-3 py-2 text-left font-semibold text-orange-900">
                         <div>{type}</div>
@@ -386,47 +423,59 @@ export default function HomePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {dates.map((date) => (
-                    <tr key={date} className="odd:bg-orange-50/50">
-                      <td
-                        className={`px-3 py-2 ${
-                          weekdayFromDateText(date) === 0
-                            ? "text-red-600"
-                            : weekdayFromDateText(date) === 6
-                              ? "text-blue-600"
-                              : "text-orange-900"
-                        }`}
-                      >
-                        {`${dayLabelFromDateText(date)} (${WEEKDAY_LABELS[weekdayFromDateText(date)]})`}
-                      </td>
-                      {shiftTypes.map((shiftType) => {
-                        const key = keyOf(date, shiftType);
-                        const warnings = ruleWarnings(date, shiftType, cells[key] ?? "");
-                        return (
-                          <td key={shiftType} className="p-1">
-                            <select
-                              className="w-full rounded bg-white px-2 py-1 outline-none focus:bg-orange-50"
-                              value={cells[key] ?? ""}
-                              onChange={(event) =>
-                                setCells((prev) => ({
-                                  ...prev,
-                                  [key]: event.target.value
-                                }))
-                              }
-                            >
-                              <option value="">未割当</option>
-                              {allStaffNames.map((name) => (
-                                <option key={name} value={name}>
-                                  {name}
-                                </option>
-                              ))}
-                            </select>
-                            {warnings.length > 0 ? <p className="mt-1 text-xs text-red-600">{warnings.join(" / ")}</p> : null}
+                  {dates.map((date) => {
+                    const weekday = weekdayFromDateText(date);
+                    const dateText = `${dayLabelFromDateText(date)} (${WEEKDAY_LABELS[weekday]})`;
+                    const dateTextClass = weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
+
+                    const classRows = SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => (
+                      <tr key={`${date}-${classGroup.key}`} className={classIndex === 1 ? "bg-orange-50/50" : undefined}>
+                        {classIndex === 0 ? (
+                          <td rowSpan={DATE_GROUP_ROW_COUNT} className={`px-3 py-2 align-top ${dateTextClass}`}>
+                            {dateText}
                           </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
+                        ) : null}
+                        <td className="whitespace-nowrap px-3 py-2 text-orange-800">{classGroup.label}</td>
+                        {shiftTypes.map((shiftType) => {
+                          const key = keyOf(date, shiftType, classGroup.key);
+                          const warnings = ruleWarnings(date, shiftType, cells[key] ?? "");
+                          return (
+                            <td key={`${classGroup.key}-${shiftType}`} className="p-1">
+                              <select
+                                className="w-full rounded bg-white px-2 py-1 outline-none focus:bg-orange-50"
+                                value={cells[key] ?? ""}
+                                onChange={(event) =>
+                                  setCells((prev) => ({
+                                    ...prev,
+                                    [key]: event.target.value
+                                  }))
+                                }
+                              >
+                                <option value="">未割当</option>
+                                {allStaffNames.map((name) => (
+                                  <option key={name} value={name}>
+                                    {name}
+                                  </option>
+                                ))}
+                              </select>
+                              {warnings.length > 0 ? <p className="mt-1 text-xs text-red-600">{warnings.join(" / ")}</p> : null}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ));
+
+                    const totalRow = (
+                      <tr key={`${date}-total`} className="bg-orange-100/40">
+                        <td className="whitespace-nowrap px-3 py-2 font-semibold text-orange-900">合計（対人数）</td>
+                        {shiftTypes.map((shiftType) => (
+                          <td key={`total-${date}-${shiftType}`} className="px-3 py-2 text-center text-xs text-orange-500" />
+                        ))}
+                      </tr>
+                    );
+
+                    return [...classRows, totalRow];
+                  })}
                 </tbody>
               </table>
 
@@ -452,18 +501,32 @@ export default function HomePage() {
                       </td>
                     ))}
                   </tr>
-                  {dates.map((date) => {
-                    const counts = assignedStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
-                    return (
-                      <tr key={`assigned-${date}`} className="odd:bg-orange-50/50">
-                        {counts.map((count, index) => (
-                          <td key={`${date}-${REQUIRED_STAFF_TIMES[index]}`} className="whitespace-nowrap px-3 py-2 text-orange-900">
+                  {dates.flatMap((date) =>
+                    [
+                      ...SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => {
+                        const counts = assignedStaffCountByDateAndClass.get(`${date}|${classGroup.key}`) ?? REQUIRED_STAFF_TIMES.map(() => 0);
+                        return (
+                          <tr key={`assigned-${date}-${classGroup.key}`} className={classIndex === 1 ? "bg-orange-50/50" : undefined}>
+                            {counts.map((count, index) => (
+                              <td
+                                key={`${date}-${classGroup.key}-${REQUIRED_STAFF_TIMES[index]}`}
+                                className="whitespace-nowrap px-3 py-2 text-orange-900"
+                              >
+                                {count}人
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      }),
+                      <tr key={`assigned-${date}-total`} className="bg-orange-100/40">
+                        {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, index) => (
+                          <td key={`${date}-total-${REQUIRED_STAFF_TIMES[index]}`} className="whitespace-nowrap px-3 py-2 font-semibold text-orange-900">
                             {count}人
                           </td>
                         ))}
                       </tr>
-                    );
-                  })}
+                    ]
+                  )}
                 </tbody>
               </table>
             </div>
