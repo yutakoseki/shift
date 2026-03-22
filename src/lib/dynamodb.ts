@@ -1,14 +1,20 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createDefaultMasterData, MasterData, normalizeMasterData } from "@/types/master-data";
-import { ShiftEntry } from "@/types/shift";
+import { ShiftColumn, ShiftEntry } from "@/types/shift";
 import { UserProfile, UserRole } from "@/types/user";
 import { logInfo } from "@/lib/server-log";
 
 type ShiftMonthItem = {
   monthKey: string;
   entries: ShiftEntry[];
+  columns?: ShiftColumn[];
   updatedAt: string;
+};
+
+export type ShiftMonthData = {
+  entries: ShiftEntry[];
+  columns?: ShiftColumn[];
 };
 
 type MasterDataItem = {
@@ -32,33 +38,68 @@ const client = new DynamoDBClient({
 const docClient = DynamoDBDocumentClient.from(client);
 const masterDataKey = "master-data-v1";
 
-export async function getShiftMonth(month: string): Promise<ShiftEntry[]> {
+export class AwsCredentialError extends Error {
+  constructor(message = "AWS credentials are invalid or expired") {
+    super(message);
+    this.name = "AwsCredentialError";
+  }
+}
+
+function isInvalidAwsCredentialError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const maybeError = error as { name?: string; __type?: string };
+  return (
+    maybeError.name === "UnrecognizedClientException" ||
+    maybeError.__type === "com.amazon.coral.service#UnrecognizedClientException"
+  );
+}
+
+async function sendDynamoCommand(command: unknown) {
+  try {
+    return await docClient.send(command as never);
+  } catch (error) {
+    if (isInvalidAwsCredentialError(error)) {
+      throw new AwsCredentialError(
+        "AWS credentials are invalid or expired. Update local credentials and retry."
+      );
+    }
+    throw error;
+  }
+}
+
+export async function getShiftMonth(month: string): Promise<ShiftMonthData> {
   if (!shiftTableName) {
     throw new Error("SHIFT_TABLE_NAME is required");
   }
 
-  const result = await docClient.send(
+  const result = (await sendDynamoCommand(
     new GetCommand({
       TableName: shiftTableName,
       Key: { monthKey: month }
     })
-  );
+  )) as { Item?: ShiftMonthItem };
 
-  const item = result.Item as ShiftMonthItem | undefined;
-  return item?.entries ?? [];
+  const item = result.Item;
+  return {
+    entries: item?.entries ?? [],
+    columns: item?.columns
+  };
 }
 
-export async function putShiftMonth(month: string, entries: ShiftEntry[]): Promise<void> {
+export async function putShiftMonth(month: string, data: ShiftMonthData): Promise<void> {
   if (!shiftTableName) {
     throw new Error("SHIFT_TABLE_NAME is required");
   }
 
-  await docClient.send(
+  await sendDynamoCommand(
     new PutCommand({
       TableName: shiftTableName,
       Item: {
         monthKey: month,
-        entries,
+        entries: data.entries,
+        columns: data.columns,
         updatedAt: new Date().toISOString()
       } satisfies ShiftMonthItem
     })
@@ -70,14 +111,14 @@ export async function getMasterData(): Promise<MasterData> {
     throw new Error("SHIFT_TABLE_NAME is required");
   }
 
-  const result = await docClient.send(
+  const result = (await sendDynamoCommand(
     new GetCommand({
       TableName: shiftTableName,
       Key: { monthKey: masterDataKey }
     })
-  );
+  )) as { Item?: MasterDataItem };
 
-  const item = result.Item as MasterDataItem | undefined;
+  const item = result.Item;
   if (!item?.data) {
     return createDefaultMasterData();
   }
@@ -89,7 +130,7 @@ export async function putMasterData(data: MasterData): Promise<void> {
     throw new Error("SHIFT_TABLE_NAME is required");
   }
 
-  await docClient.send(
+  await sendDynamoCommand(
     new PutCommand({
       TableName: shiftTableName,
       Item: {
@@ -106,13 +147,13 @@ export async function listUsers(): Promise<UserProfile[]> {
     throw new Error("USER_TABLE_NAME is required");
   }
 
-  const result = await docClient.send(
+  const result = (await sendDynamoCommand(
     new ScanCommand({
       TableName: userTableName
     })
-  );
+  )) as { Items?: UserProfile[] };
 
-  const items = (result.Items ?? []) as UserProfile[];
+  const items = result.Items ?? [];
   logInfo("lib/dynamodb.listUsers", "scan completed", { count: items.length, tableName: userTableName });
   return items.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
@@ -122,14 +163,14 @@ export async function getUserById(userId: string): Promise<UserProfile | null> {
     throw new Error("USER_TABLE_NAME is required");
   }
 
-  const result = await docClient.send(
+  const result = (await sendDynamoCommand(
     new GetCommand({
       TableName: userTableName,
       Key: { userId }
     })
-  );
+  )) as { Item?: UserProfile };
 
-  const profile = (result.Item as UserProfile | undefined) ?? null;
+  const profile = result.Item ?? null;
   logInfo("lib/dynamodb.getUserById", "read completed", {
     userId,
     found: Boolean(profile),
@@ -144,7 +185,7 @@ export async function putUserProfile(profile: Omit<UserProfile, "createdAt" | "u
   }
 
   const now = new Date().toISOString();
-  await docClient.send(
+  await sendDynamoCommand(
     new PutCommand({
       TableName: userTableName,
       Item: {
@@ -187,7 +228,7 @@ export async function ensureUserProfile(input: {
     throw new Error("USER_TABLE_NAME is required");
   }
 
-  await docClient.send(
+  await sendDynamoCommand(
     new PutCommand({
       TableName: userTableName,
       Item: profile,
@@ -208,7 +249,7 @@ export async function updateUserRole(userId: string, role: UserRole): Promise<Us
     throw new Error("USER_TABLE_NAME is required");
   }
 
-  const result = await docClient.send(
+  const result = (await sendDynamoCommand(
     new UpdateCommand({
       TableName: userTableName,
       Key: { userId },
@@ -223,7 +264,7 @@ export async function updateUserRole(userId: string, role: UserRole): Promise<Us
       ConditionExpression: "attribute_exists(userId)",
       ReturnValues: "ALL_NEW"
     })
-  );
+  )) as { Attributes?: UserProfile };
 
   const updated = result.Attributes as UserProfile;
   logInfo("lib/dynamodb.updateUserRole", "update completed", {

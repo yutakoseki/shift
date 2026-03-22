@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getMasterData, putMasterData } from "@/lib/dynamodb";
+import { AwsCredentialError, getMasterData, putMasterData } from "@/lib/dynamodb";
+import { logError } from "@/lib/server-log";
 import { MasterData } from "@/types/master-data";
 
 function isTime(value: string): boolean {
@@ -91,19 +92,35 @@ function isMasterData(data: MasterData): boolean {
 }
 
 export async function GET(): Promise<NextResponse> {
-  const data = await getMasterData();
-  return NextResponse.json(data);
+  try {
+    const data = await getMasterData();
+    return NextResponse.json(data);
+  } catch (error) {
+    logError("api/master-data.GET", "request failed", error);
+    if (error instanceof AwsCredentialError) {
+      return NextResponse.json({ error: "aws credentials are invalid or expired" }, { status: 503 });
+    }
+    return NextResponse.json({ error: "failed to load master data" }, { status: 500 });
+  }
 }
 
 export async function PUT(request: NextRequest): Promise<NextResponse> {
-  const body = (await request.json()) as MasterData;
-  if (!isMasterData(body)) {
-    return NextResponse.json({ error: "invalid master data" }, { status: 400 });
-  }
+  try {
+    const body = (await request.json()) as MasterData;
+    if (!isMasterData(body)) {
+      return NextResponse.json({ error: "invalid master data" }, { status: 400 });
+    }
 
-  await putMasterData({
-    ...body,
-    updatedAt: new Date().toISOString()
-  });
-  return NextResponse.json({ ok: true });
+    await putMasterData({
+      ...body,
+      updatedAt: new Date().toISOString()
+    });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    logError("api/master-data.PUT", "request failed", error);
+    if (error instanceof AwsCredentialError) {
+      return NextResponse.json({ error: "aws credentials are invalid or expired" }, { status: 503 });
+    }
+    return NextResponse.json({ error: "failed to update master data" }, { status: 500 });
+  }
 }

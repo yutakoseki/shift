@@ -11,11 +11,18 @@ export type ShiftClassGroup = (typeof SHIFT_CLASS_GROUPS)[number]["key"];
 export type ShiftEntry = {
   date: string;
   shiftType: ShiftType;
+  columnKey?: string;
   classGroup?: ShiftClassGroup;
   staffName: string;
+};
+
+export type ShiftColumn = {
+  id: string;
+  shiftType: ShiftType;
 };
 
 export type ShiftMonthResponse = {
   month: string;
   entries: ShiftEntry[];
+  columns?: ShiftColumn[];
 };

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MasterData, PartTimeStaff } from "@/types/master-data";
-import { SHIFT_CLASS_GROUPS, ShiftClassGroup, ShiftEntry, ShiftMonthResponse } from "@/types/shift";
+import { SHIFT_CLASS_GROUPS, ShiftClassGroup, ShiftColumn, ShiftEntry, ShiftMonthResponse } from "@/types/shift";
 import FullscreenLoading from "@/components/fullscreen-loading";
 
 const REQUIRED_STAFF_TIMES = [
@@ -24,6 +24,10 @@ const REQUIRED_STAFF_TIMES = [
 const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"] as const;
 const DATE_GROUP_ROW_COUNT = SHIFT_CLASS_GROUPS.length + 1;
 
+function createShiftColumnId(shiftType: string): string {
+  return `${shiftType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function monthToDates(month: string): string[] {
   const [yearText, monthText] = month.split("-");
   const year = Number(yearText);
@@ -41,8 +45,8 @@ function currentMonth(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function keyOf(date: string, shiftType: string, classGroup: ShiftClassGroup): string {
-  return `${date}|${classGroup}|${shiftType}`;
+function keyOf(date: string, columnId: string, classGroup: ShiftClassGroup): string {
+  return `${date}|${classGroup}|${columnId}`;
 }
 
 function timeToMinutes(value: string): number {
@@ -134,10 +138,15 @@ export default function HomePage() {
   const [masterData, setMasterData] = useState<MasterData | null>(null);
   const [month, setMonth] = useState(currentMonth);
   const [cells, setCells] = useState<Record<string, string>>({});
-  const [visibleShiftTypes, setVisibleShiftTypes] = useState<string[]>(["早番", "中番", "遅番"]);
-  const [headerMenuShiftType, setHeaderMenuShiftType] = useState<string | null>(null);
-  const [addColumnBaseShiftType, setAddColumnBaseShiftType] = useState<string | null>(null);
+  const [shiftColumns, setShiftColumns] = useState<ShiftColumn[]>([
+    { id: createShiftColumnId("早番"), shiftType: "早番" },
+    { id: createShiftColumnId("中番"), shiftType: "中番" },
+    { id: createShiftColumnId("遅番"), shiftType: "遅番" }
+  ]);
+  const [headerMenuColumnId, setHeaderMenuColumnId] = useState<string | null>(null);
+  const [addColumnBaseColumnId, setAddColumnBaseColumnId] = useState<string | null>(null);
   const [addColumnShiftType, setAddColumnShiftType] = useState("");
+  const [deleteTargetColumnId, setDeleteTargetColumnId] = useState<string | null>(null);
 
   const dates = useMemo(() => monthToDates(month), [month]);
   const shiftPatterns = useMemo(() => masterData?.shiftPatterns ?? [], [masterData]);
@@ -145,16 +154,14 @@ export default function HomePage() {
     const values = shiftPatterns.map((pattern) => pattern.code.trim()).filter((code) => code.length > 0);
     return values.length > 0 ? values : ["早番", "中番", "遅番"];
   }, [shiftPatterns]);
-  const shiftTypes = visibleShiftTypes;
-  const addableShiftTypes = useMemo(
-    () => allShiftTypes.filter((shiftType) => !shiftTypes.includes(shiftType)),
-    [allShiftTypes, shiftTypes]
-  );
 
   useEffect(() => {
-    setVisibleShiftTypes((prev) => {
-      const preserved = prev.filter((shiftType) => allShiftTypes.includes(shiftType));
-      return preserved.length > 0 ? preserved : allShiftTypes;
+    setShiftColumns((prev) => {
+      const filtered = prev.filter((column) => allShiftTypes.includes(column.shiftType));
+      if (filtered.length > 0) {
+        return filtered;
+      }
+      return allShiftTypes.map((shiftType) => ({ id: createShiftColumnId(shiftType), shiftType }));
     });
   }, [allShiftTypes]);
 
@@ -238,12 +245,12 @@ export default function HomePage() {
         const counts = REQUIRED_STAFF_TIMES.map((time) => {
           const targetMinutes = timeToMinutes(time);
           const presentStaff = new Set<string>();
-          for (const shiftType of shiftTypes) {
-            const staffName = (cells[keyOf(date, shiftType, classGroup.key)] ?? "").trim();
+          for (const column of shiftColumns) {
+            const staffName = (cells[keyOf(date, column.id, classGroup.key)] ?? "").trim();
             if (!staffName) {
               continue;
             }
-            const pattern = shiftPatternByCode.get(shiftType);
+            const pattern = shiftPatternByCode.get(column.shiftType);
             if (!pattern) {
               continue;
             }
@@ -259,7 +266,7 @@ export default function HomePage() {
       }
     }
     return countByDateAndClass;
-  }, [cells, dates, shiftPatternByCode, shiftTypes]);
+  }, [cells, dates, shiftColumns, shiftPatternByCode]);
 
   const assignedTotalStaffCountByDate = useMemo(() => {
     const countByDate = new Map<string, number[]>();
@@ -268,12 +275,12 @@ export default function HomePage() {
         const targetMinutes = timeToMinutes(time);
         const presentStaff = new Set<string>();
         for (const classGroup of SHIFT_CLASS_GROUPS) {
-          for (const shiftType of shiftTypes) {
-            const staffName = (cells[keyOf(date, shiftType, classGroup.key)] ?? "").trim();
+          for (const column of shiftColumns) {
+            const staffName = (cells[keyOf(date, column.id, classGroup.key)] ?? "").trim();
             if (!staffName) {
               continue;
             }
-            const pattern = shiftPatternByCode.get(shiftType);
+            const pattern = shiftPatternByCode.get(column.shiftType);
             if (!pattern) {
               continue;
             }
@@ -289,7 +296,7 @@ export default function HomePage() {
       countByDate.set(date, counts);
     }
     return countByDate;
-  }, [cells, dates, shiftPatternByCode, shiftTypes]);
+  }, [cells, dates, shiftColumns, shiftPatternByCode]);
 
   const loadMonth = useCallback(async () => {
     setLoadingData(true);
@@ -300,15 +307,96 @@ export default function HomePage() {
       }
       const data = (await response.json()) as ShiftMonthResponse;
       const nextCells: Record<string, string> = {};
-      data.entries.forEach((entry) => {
+      const loadedColumns: ShiftColumn[] = [];
+      const firstColumnIdByShiftType = new Map<string, string>();
+
+      if (Array.isArray(data.columns) && data.columns.length > 0) {
+        data.columns.forEach((column) => {
+          loadedColumns.push({ id: column.id, shiftType: column.shiftType });
+          if (!firstColumnIdByShiftType.has(column.shiftType)) {
+            firstColumnIdByShiftType.set(column.shiftType, column.id);
+          }
+        });
+      } else {
+        const loadedColumnKeySet = new Set<string>();
+        for (const entry of data.entries) {
+          if (entry.columnKey && !loadedColumnKeySet.has(entry.columnKey)) {
+            loadedColumnKeySet.add(entry.columnKey);
+            loadedColumns.push({ id: entry.columnKey, shiftType: entry.shiftType });
+            if (!firstColumnIdByShiftType.has(entry.shiftType)) {
+              firstColumnIdByShiftType.set(entry.shiftType, entry.columnKey);
+            }
+          }
+        }
+      }
+
+      if (loadedColumns.length > 0) {
+        setShiftColumns(loadedColumns);
+      } else {
+        const fallbackColumns = allShiftTypes.map((shiftType) => ({ id: createShiftColumnId(shiftType), shiftType }));
+        setShiftColumns(fallbackColumns);
+        fallbackColumns.forEach((column) => {
+          if (!firstColumnIdByShiftType.has(column.shiftType)) {
+            firstColumnIdByShiftType.set(column.shiftType, column.id);
+          }
+        });
+      }
+
+      for (const entry of data.entries) {
         const classGroup = entry.classGroup ?? "0-1";
-        nextCells[keyOf(entry.date, entry.shiftType, classGroup)] = entry.staffName;
-      });
+        const columnId = entry.columnKey ?? firstColumnIdByShiftType.get(entry.shiftType);
+        if (!columnId) {
+          continue;
+        }
+        nextCells[keyOf(entry.date, columnId, classGroup)] = entry.staffName;
+      }
       setCells(nextCells);
     } finally {
       setLoadingData(false);
     }
-  }, [month]);
+  }, [allShiftTypes, month]);
+
+  const buildEntriesFromColumns = useCallback(
+    (columns: ShiftColumn[]): ShiftEntry[] => {
+      const entries: ShiftEntry[] = [];
+      for (const date of dates) {
+        for (const classGroup of SHIFT_CLASS_GROUPS) {
+          for (const column of columns) {
+            const staffName = (cells[keyOf(date, column.id, classGroup.key)] ?? "").trim();
+            if (staffName.length > 0) {
+              entries.push({
+                date,
+                classGroup: classGroup.key,
+                shiftType: column.shiftType,
+                columnKey: column.id,
+                staffName
+              });
+            }
+          }
+        }
+      }
+      return entries;
+    },
+    [cells, dates]
+  );
+
+  const persistShiftColumns = useCallback(
+    async (columns: ShiftColumn[]): Promise<void> => {
+      const response = await fetch("/api/shifts", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          month,
+          entries: buildEntriesFromColumns(columns),
+          columns
+        })
+      });
+      if (!response.ok) {
+        throw new Error("列構成の保存に失敗しました");
+      }
+    },
+    [buildEntriesFromColumns, month]
+  );
 
   useEffect(() => {
     void loadMonth();
@@ -317,22 +405,10 @@ export default function HomePage() {
   async function saveMonth(): Promise<void> {
     setSaving(true);
     try {
-      const entries: ShiftEntry[] = [];
-      for (const date of dates) {
-        for (const classGroup of SHIFT_CLASS_GROUPS) {
-          for (const shiftType of shiftTypes) {
-            const staffName = (cells[keyOf(date, shiftType, classGroup.key)] ?? "").trim();
-            if (staffName.length > 0) {
-              entries.push({ date, classGroup: classGroup.key, shiftType, staffName });
-            }
-          }
-        }
-      }
-
       const response = await fetch("/api/shifts", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ month, entries })
+        body: JSON.stringify({ month, entries: buildEntriesFromColumns(shiftColumns), columns: shiftColumns })
       });
       if (!response.ok) {
         throw new Error("保存に失敗しました");
@@ -389,53 +465,77 @@ export default function HomePage() {
     return warnings;
   }
 
-  function handleDeleteShiftType(shiftType: string): void {
-    if (shiftTypes.length <= 1) {
+  function performDeleteShiftColumn(columnId: string): void {
+    if (shiftColumns.length <= 1) {
       alert("最低1つはシフトヘッダーを残してください。");
       return;
     }
-    setVisibleShiftTypes((prev) => prev.filter((item) => item !== shiftType));
-    setHeaderMenuShiftType(null);
+    const previousColumns = shiftColumns;
+    const nextColumns = shiftColumns.filter((column) => column.id !== columnId);
+    setShiftColumns(nextColumns);
+    setHeaderMenuColumnId(null);
+    void (async () => {
+      try {
+        await persistShiftColumns(nextColumns);
+      } catch (error) {
+        setShiftColumns(previousColumns);
+        alert(error instanceof Error ? error.message : "列構成の保存に失敗しました");
+      }
+    })();
   }
 
-  function handleAddShiftTypeRight(baseShiftType: string, nextType: string): void {
+  function handleDeleteShiftColumn(columnId: string): void {
+    setDeleteTargetColumnId(columnId);
+    setHeaderMenuColumnId(null);
+  }
+
+  function confirmDeleteShiftColumn(): void {
+    if (!deleteTargetColumnId) {
+      return;
+    }
+    const target = deleteTargetColumnId;
+    setDeleteTargetColumnId(null);
+    performDeleteShiftColumn(target);
+  }
+
+  function handleAddShiftTypeRight(baseColumnId: string, nextType: string): void {
     if (!nextType) {
       alert("追加するシフトパターンを選択してください。");
       return;
     }
-    if (!addableShiftTypes.includes(nextType)) {
-      alert("追加できるシフトヘッダーがありません。");
+    const baseIndex = shiftColumns.findIndex((column) => column.id === baseColumnId);
+    if (baseIndex < 0) {
       return;
     }
-    setVisibleShiftTypes((prev) => {
-      if (prev.includes(nextType)) {
-        return prev;
-      }
-      const index = prev.indexOf(baseShiftType);
-      if (index < 0) {
-        return [...prev, nextType];
-      }
-      const next = [...prev];
-      next.splice(index + 1, 0, nextType);
-      return next;
-    });
-    setHeaderMenuShiftType(null);
-    setAddColumnBaseShiftType(null);
+    const previousColumns = shiftColumns;
+    const nextColumns = [...shiftColumns];
+    nextColumns.splice(baseIndex + 1, 0, { id: createShiftColumnId(nextType), shiftType: nextType });
+    setShiftColumns(nextColumns);
+    setHeaderMenuColumnId(null);
+    setAddColumnBaseColumnId(null);
     setAddColumnShiftType("");
+    void (async () => {
+      try {
+        await persistShiftColumns(nextColumns);
+      } catch (error) {
+        setShiftColumns(previousColumns);
+        alert(error instanceof Error ? error.message : "列構成の保存に失敗しました");
+      }
+    })();
   }
 
-  function openAddColumnModal(baseShiftType: string): void {
-    if (addableShiftTypes.length === 0) {
-      alert("追加できるシフトヘッダーがありません。");
+  function openAddColumnModal(baseColumnId: string): void {
+    if (allShiftTypes.length === 0) {
+      alert("追加できるシフトパターンがありません。");
       return;
     }
-    setAddColumnBaseShiftType(baseShiftType);
-    setAddColumnShiftType(addableShiftTypes[0]);
-    setHeaderMenuShiftType(null);
+    setAddColumnBaseColumnId(baseColumnId);
+    setAddColumnShiftType(allShiftTypes[0]);
+    setHeaderMenuColumnId(null);
   }
 
   useEffect(() => {
-    if (!headerMenuShiftType) {
+    if (!headerMenuColumnId) {
       return;
     }
     const handleMouseDown = (event: MouseEvent): void => {
@@ -446,13 +546,13 @@ export default function HomePage() {
       if (target.closest('[data-header-menu="true"]') || target.closest('[data-header-trigger="true"]')) {
         return;
       }
-      setHeaderMenuShiftType(null);
+      setHeaderMenuColumnId(null);
     };
     document.addEventListener("mousedown", handleMouseDown);
     return () => {
       document.removeEventListener("mousedown", handleMouseDown);
     };
-  }, [headerMenuShiftType]);
+  }, [headerMenuColumnId]);
 
   return (
     <>
@@ -503,9 +603,9 @@ export default function HomePage() {
                   <tr>
                     <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">日付</th>
                     <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">クラス区分</th>
-                    {shiftTypes.map((type, columnIndex) => (
+                    {shiftColumns.map((column, columnIndex) => (
                       <th
-                        key={type}
+                        key={column.id}
                         className={`relative cursor-pointer px-3 py-2 text-center font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
                         onMouseDown={(event) => {
                           const target = event.target;
@@ -513,17 +613,17 @@ export default function HomePage() {
                             return;
                           }
                           event.preventDefault();
-                          setHeaderMenuShiftType((prev) => (prev === type ? null : type));
+                          setHeaderMenuColumnId((prev) => (prev === column.id ? null : column.id));
                         }}
                         data-header-trigger="true"
                       >
-                        <div className="text-center">{type}</div>
-                        {shiftPatternByCode.get(type) ? (
+                        <div className="text-center">{column.shiftType}</div>
+                        {shiftPatternByCode.get(column.shiftType) ? (
                           <div className="text-center text-xs font-normal text-orange-700">
-                            {shiftPatternByCode.get(type)?.startTime} - {shiftPatternByCode.get(type)?.endTime}
+                            {shiftPatternByCode.get(column.shiftType)?.startTime} - {shiftPatternByCode.get(column.shiftType)?.endTime}
                           </div>
                         ) : null}
-                        {headerMenuShiftType === type ? (
+                        {headerMenuColumnId === column.id ? (
                           <div
                             className="absolute left-full top-1/2 z-20 ml-2 -translate-y-1/2 rounded-md border border-orange-200 bg-white p-1 shadow-md"
                             data-header-menu="true"
@@ -532,7 +632,7 @@ export default function HomePage() {
                               className="block w-full whitespace-nowrap rounded px-2 py-1 text-left text-xs text-orange-800 hover:bg-orange-100"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                openAddColumnModal(type);
+                                openAddColumnModal(column.id);
                               }}
                             >
                               右に列を追加
@@ -541,7 +641,7 @@ export default function HomePage() {
                               className="mt-1 block w-full whitespace-nowrap rounded px-2 py-1 text-left text-xs text-red-700 hover:bg-red-100"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                handleDeleteShiftType(type);
+                                handleDeleteShiftColumn(column.id);
                               }}
                             >
                               列を削除
@@ -569,11 +669,11 @@ export default function HomePage() {
                           </td>
                         ) : null}
                         <td className="whitespace-nowrap px-3 py-2 text-orange-800">{classGroup.label}</td>
-                        {shiftTypes.map((shiftType, columnIndex) => {
-                          const key = keyOf(date, shiftType, classGroup.key);
-                          const warnings = ruleWarnings(date, shiftType, cells[key] ?? "");
+                        {shiftColumns.map((column, columnIndex) => {
+                          const key = keyOf(date, column.id, classGroup.key);
+                          const warnings = ruleWarnings(date, column.shiftType, cells[key] ?? "");
                           return (
-                            <td key={`${classGroup.key}-${shiftType}`} className={`p-1 ${bodyStripeClass(columnIndex)}`}>
+                            <td key={`${classGroup.key}-${column.id}`} className={`p-1 ${bodyStripeClass(columnIndex)}`}>
                               <select
                                 className="w-full rounded bg-white px-2 py-1 outline-none focus:bg-orange-50"
                                 value={cells[key] ?? ""}
@@ -601,9 +701,9 @@ export default function HomePage() {
                     const totalRow = (
                       <tr key={`${date}-total`} className="border-b-2 border-orange-200 bg-orange-100/40">
                         <td className="whitespace-nowrap px-3 py-2 font-semibold text-orange-900">合計（対人数）</td>
-                        {shiftTypes.map((shiftType, columnIndex) => (
+                        {shiftColumns.map((column, columnIndex) => (
                           <td
-                            key={`total-${date}-${shiftType}`}
+                            key={`total-${date}-${column.id}`}
                             className={`px-3 py-2 text-center text-xs text-orange-500 ${summaryStripeClass(columnIndex)}`}
                           />
                         ))}
@@ -675,7 +775,7 @@ export default function HomePage() {
           </div>
         </section>
 
-        {addColumnBaseShiftType ? (
+        {addColumnBaseColumnId ? (
           <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30 p-4">
             <div className="w-full max-w-sm rounded-lg bg-white p-4 shadow-lg">
               <h3 className="text-base font-semibold text-orange-900">右に列を追加</h3>
@@ -685,17 +785,22 @@ export default function HomePage() {
                 value={addColumnShiftType}
                 onChange={(event) => setAddColumnShiftType(event.target.value)}
               >
-                {addableShiftTypes.map((candidate) => (
-                  <option key={candidate} value={candidate}>
-                    {candidate}
-                  </option>
-                ))}
+                {allShiftTypes.map((candidate) => {
+                  const pattern = shiftPatternByCode.get(candidate);
+                  const timeText = pattern ? `${pattern.startTime} - ${pattern.endTime}` : "時間未設定";
+                  const customText = pattern?.isCustom ? " / カスタム" : "";
+                  return (
+                    <option key={candidate} value={candidate}>
+                      {`${candidate}（${timeText}${customText}）`}
+                    </option>
+                  );
+                })}
               </select>
               <div className="mt-4 flex justify-end gap-2">
                 <button
                   className="rounded bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200"
                   onClick={() => {
-                    setAddColumnBaseShiftType(null);
+                    setAddColumnBaseColumnId(null);
                     setAddColumnShiftType("");
                   }}
                 >
@@ -703,9 +808,32 @@ export default function HomePage() {
                 </button>
                 <button
                   className="rounded bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600"
-                  onClick={() => handleAddShiftTypeRight(addColumnBaseShiftType, addColumnShiftType)}
+                  onClick={() => handleAddShiftTypeRight(addColumnBaseColumnId, addColumnShiftType)}
                 >
                   追加する
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {deleteTargetColumnId ? (
+          <div className="fixed inset-0 z-50 m-0 flex items-center justify-center bg-black/40">
+            <div className="mx-4 w-full max-w-sm rounded-lg bg-white p-4 shadow-lg">
+              <h3 className="text-base font-semibold text-orange-900">列削除の確認</h3>
+              <p className="mt-1 text-sm text-orange-700">この列を削除してよいですか？</p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  className="rounded bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200"
+                  onClick={() => setDeleteTargetColumnId(null)}
+                >
+                  キャンセル
+                </button>
+                <button
+                  className="rounded bg-red-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-red-600"
+                  onClick={() => confirmDeleteShiftColumn()}
+                >
+                  削除する
                 </button>
               </div>
             </div>
