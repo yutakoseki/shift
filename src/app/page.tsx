@@ -115,6 +115,18 @@ function dayLabelFromDateText(date: string): string {
   return Number.isFinite(dayNumber) ? String(dayNumber) : date;
 }
 
+function headerStripeClass(columnIndex: number): string {
+  return columnIndex % 2 === 0 ? "bg-orange-100/70" : "bg-orange-200/60";
+}
+
+function bodyStripeClass(columnIndex: number): string {
+  return columnIndex % 2 === 0 ? "bg-white/70" : "bg-orange-50/40";
+}
+
+function summaryStripeClass(columnIndex: number): string {
+  return columnIndex % 2 === 0 ? "bg-orange-100/40" : "bg-orange-200/30";
+}
+
 export default function HomePage() {
   const [loadingData, setLoadingData] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -406,12 +418,12 @@ export default function HomePage() {
           <div className="mt-3 overflow-auto">
             <div className="flex min-w-max items-start">
               <table className="text-sm">
-                <thead className="bg-orange-100/70">
+                <thead>
                   <tr>
-                    <th className="px-3 py-2 text-left font-semibold text-orange-900">日付</th>
-                    <th className="px-3 py-2 text-left font-semibold text-orange-900">クラス区分</th>
-                    {shiftTypes.map((type) => (
-                      <th key={type} className="px-3 py-2 text-left font-semibold text-orange-900">
+                    <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">日付</th>
+                    <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">クラス区分</th>
+                    {shiftTypes.map((type, columnIndex) => (
+                      <th key={type} className={`px-3 py-2 text-left font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}>
                         <div>{type}</div>
                         {shiftPatternByCode.get(type) ? (
                           <div className="text-xs font-normal text-orange-700">
@@ -439,11 +451,11 @@ export default function HomePage() {
                           </td>
                         ) : null}
                         <td className="whitespace-nowrap px-3 py-2 text-orange-800">{classGroup.label}</td>
-                        {shiftTypes.map((shiftType) => {
+                        {shiftTypes.map((shiftType, columnIndex) => {
                           const key = keyOf(date, shiftType, classGroup.key);
                           const warnings = ruleWarnings(date, shiftType, cells[key] ?? "");
                           return (
-                            <td key={`${classGroup.key}-${shiftType}`} className="p-1">
+                            <td key={`${classGroup.key}-${shiftType}`} className={`p-1 ${bodyStripeClass(columnIndex)}`}>
                               <select
                                 className="w-full rounded bg-white px-2 py-1 outline-none focus:bg-orange-50"
                                 value={cells[key] ?? ""}
@@ -471,8 +483,11 @@ export default function HomePage() {
                     const totalRow = (
                       <tr key={`${date}-total`} className="border-b-2 border-orange-200 bg-orange-100/40">
                         <td className="whitespace-nowrap px-3 py-2 font-semibold text-orange-900">合計（対人数）</td>
-                        {shiftTypes.map((shiftType) => (
-                          <td key={`total-${date}-${shiftType}`} className="px-3 py-2 text-center text-xs text-orange-500" />
+                        {shiftTypes.map((shiftType, columnIndex) => (
+                          <td
+                            key={`total-${date}-${shiftType}`}
+                            className={`px-3 py-2 text-center text-xs text-orange-500 ${summaryStripeClass(columnIndex)}`}
+                          />
                         ))}
                       </tr>
                     );
@@ -485,20 +500,20 @@ export default function HomePage() {
               <table className="border-l border-orange-200 text-sm">
                 <tbody>
                   <tr className="h-[26px] bg-orange-100/70">
-                    {requiredStaffByTime.map((item) => (
+                    {requiredStaffByTime.map((item, columnIndex) => (
                       <th
                         key={item.time}
-                        className="h-[26px] whitespace-nowrap px-3 py-0 text-left align-middle font-semibold text-orange-900"
+                        className={`h-[26px] whitespace-nowrap px-3 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
                       >
                         {item.time}
                       </th>
                     ))}
                   </tr>
                   <tr className="h-[26px] odd:bg-orange-50/50">
-                    {requiredStaffByTime.map((item) => (
+                    {requiredStaffByTime.map((item, columnIndex) => (
                       <td
                         key={`required-${item.time}`}
-                        className="h-[26px] whitespace-nowrap px-3 py-0 align-middle font-semibold text-orange-900"
+                        className={`h-[26px] whitespace-nowrap px-3 py-0 align-middle font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
                       >
                         {item.requiredCount}人
                       </td>
@@ -513,10 +528,10 @@ export default function HomePage() {
                             key={`assigned-${date}-${classGroup.key}`}
                             className={classIndex === 0 ? "border-t-2 border-orange-200" : undefined}
                           >
-                            {counts.map((count, index) => (
+                            {counts.map((count, columnIndex) => (
                               <td
-                                key={`${date}-${classGroup.key}-${REQUIRED_STAFF_TIMES[index]}`}
-                                className="whitespace-nowrap px-3 py-2 text-orange-900"
+                                key={`${date}-${classGroup.key}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
+                                className={`whitespace-nowrap px-3 py-2 text-orange-900 ${bodyStripeClass(columnIndex)}`}
                               >
                                 {count}人
                               </td>
@@ -525,8 +540,11 @@ export default function HomePage() {
                         );
                       }),
                       <tr key={`assigned-${date}-total`} className="border-b-2 border-orange-200 bg-orange-100/40">
-                        {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, index) => (
-                          <td key={`${date}-total-${REQUIRED_STAFF_TIMES[index]}`} className="whitespace-nowrap px-3 py-2 font-semibold text-orange-900">
+                        {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
+                          <td
+                            key={`${date}-total-${REQUIRED_STAFF_TIMES[columnIndex]}`}
+                            className={`whitespace-nowrap px-3 py-2 font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
+                          >
                             {count}人
                           </td>
                         ))}
