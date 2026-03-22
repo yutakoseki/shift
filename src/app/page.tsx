@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MasterData, PartTimeStaff } from "@/types/master-data";
 import { SHIFT_CLASS_GROUPS, ShiftClassGroup, ShiftColumn, ShiftEntry, ShiftMonthResponse } from "@/types/shift";
 import FullscreenLoading from "@/components/fullscreen-loading";
@@ -159,6 +159,10 @@ export default function HomePage() {
   const [requiredOverrideByTime, setRequiredOverrideByTime] = useState<Record<string, number>>({});
   const [showResetRequiredModal, setShowResetRequiredModal] = useState(false);
   const [viewMode, setViewMode] = useState<"class" | "staff">("class");
+  const topScrollRef = useRef<HTMLDivElement | null>(null);
+  const bottomScrollRef = useRef<HTMLDivElement | null>(null);
+  const [topScrollWidth, setTopScrollWidth] = useState(0);
+  const syncingScrollFrom = useRef<"top" | "bottom" | null>(null);
 
   const dates = useMemo(() => monthToDates(month), [month]);
   const shiftPatterns = useMemo(() => masterData?.shiftPatterns ?? [], [masterData]);
@@ -735,6 +739,59 @@ export default function HomePage() {
     setRequiredOverrideByTime({});
   }
 
+  const compactClass = "text-[12px]";
+  const compactHeadCellClass = "px-2 py-1.5";
+  const compactBodyCellClass = "px-2 py-1.5";
+  const compactSelectClass = "w-full rounded bg-white px-1.5 py-1 text-xs outline-none focus:bg-orange-50";
+
+  useEffect(() => {
+    const updateTopScrollWidth = (): void => {
+      const width = bottomScrollRef.current?.scrollWidth ?? 0;
+      setTopScrollWidth(width);
+    };
+
+    updateTopScrollWidth();
+    const observed = bottomScrollRef.current;
+    let resizeObserver: ResizeObserver | null = null;
+    if (observed && typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => updateTopScrollWidth());
+      resizeObserver.observe(observed);
+    }
+    window.addEventListener("resize", updateTopScrollWidth);
+    return () => {
+      window.removeEventListener("resize", updateTopScrollWidth);
+      resizeObserver?.disconnect();
+    };
+  }, [viewMode, shiftColumns.length, allStaffNames.length, dates.length]);
+
+  function handleTopScroll(): void {
+    if (!topScrollRef.current || !bottomScrollRef.current) {
+      return;
+    }
+    if (syncingScrollFrom.current === "bottom") {
+      return;
+    }
+    syncingScrollFrom.current = "top";
+    bottomScrollRef.current.scrollLeft = topScrollRef.current.scrollLeft;
+    requestAnimationFrame(() => {
+      syncingScrollFrom.current = null;
+    });
+  }
+
+  function handleBottomScroll(): void {
+    if (!topScrollRef.current || !bottomScrollRef.current) {
+      return;
+    }
+    if (syncingScrollFrom.current === "top") {
+      return;
+    }
+    syncingScrollFrom.current = "bottom";
+    topScrollRef.current.scrollLeft = bottomScrollRef.current.scrollLeft;
+    requestAnimationFrame(() => {
+      syncingScrollFrom.current = null;
+    });
+  }
+
   function performDeleteShiftColumn(columnId: string): void {
     if (shiftColumns.length <= 1) {
       alert("最低1つはシフトヘッダーを残してください。");
@@ -828,7 +885,7 @@ export default function HomePage() {
     <>
       {loadingData || loadingMasterData ? <FullscreenLoading /> : null}
       <main className="space-y-4 p-4 md:p-6">
-        <section className="rounded-xl bg-white p-4 shadow-sm">
+        <section className="rounded-xl bg-white p-2 shadow-sm md:p-3">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-orange-900">保育園シフト管理</h1>
@@ -892,18 +949,27 @@ export default function HomePage() {
               必要人数リセット
             </button>
           </div>
-          <div className="mt-3 overflow-auto">
-            {viewMode === "class" ? (
+          <div className="mt-3 space-y-2">
+            <div
+              ref={topScrollRef}
+              onScroll={() => handleTopScroll()}
+              className="overflow-x-auto overflow-y-hidden"
+              aria-label="上部スクロールバー"
+            >
+              <div style={{ width: `${Math.max(topScrollWidth, 1)}px`, height: "1px" }} />
+            </div>
+            <div ref={bottomScrollRef} onScroll={() => handleBottomScroll()} className="overflow-auto">
+              {viewMode === "class" ? (
               <div className="flex min-w-max items-start">
-                <table className="text-sm">
+                <table className={compactClass}>
                   <thead>
                     <tr>
-                      <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">日付</th>
-                      <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">クラス区分</th>
+                      <th className={`h-[52px] bg-orange-100/70 text-left align-middle font-semibold text-orange-900 ${compactHeadCellClass}`}>日付</th>
+                      <th className={`h-[52px] bg-orange-100/70 text-left align-middle font-semibold text-orange-900 ${compactHeadCellClass}`}>クラス区分</th>
                       {shiftColumns.map((column, columnIndex) => (
                         <th
                           key={column.id}
-                          className={`relative cursor-pointer px-3 py-2 text-center font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
+                        className={`relative h-[52px] cursor-pointer text-center align-middle font-semibold text-orange-900 ${compactHeadCellClass} ${headerStripeClass(columnIndex)}`}
                           onMouseDown={(event) => {
                             const target = event.target;
                             if (target instanceof Element && target.closest('[data-header-menu="true"]')) {
@@ -916,7 +982,7 @@ export default function HomePage() {
                         >
                           <div className="text-center">{column.shiftType}</div>
                           {shiftPatternByCode.get(column.shiftType) ? (
-                            <div className="text-center text-xs font-normal text-orange-700">
+                            <div className="text-center text-xs leading-tight font-normal text-orange-700">
                               {shiftPatternByCode.get(column.shiftType)?.startTime} - {shiftPatternByCode.get(column.shiftType)?.endTime}
                             </div>
                           ) : null}
@@ -956,25 +1022,22 @@ export default function HomePage() {
                       const dateTextClass = weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
 
                       const classRows = SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => (
-                        <tr
-                          key={`${date}-${classGroup.key}`}
-                          className={classIndex === 0 ? "border-t-2 border-orange-200" : undefined}
-                        >
+                        <tr key={`${date}-${classGroup.key}`} className={classIndex === 0 ? "h-9 border-t-2 border-orange-200" : "h-9"}>
                           {classIndex === 0 ? (
-                            <td rowSpan={DATE_GROUP_ROW_COUNT} className={`px-3 py-2 text-center align-middle ${dateTextClass}`}>
+                          <td rowSpan={DATE_GROUP_ROW_COUNT} className={`${compactBodyCellClass} text-center align-middle ${dateTextClass}`}>
                               {dateText}
                             </td>
                           ) : null}
-                          <td className="whitespace-nowrap px-3 py-2 text-orange-800">{classGroup.label}</td>
+                          <td className={`whitespace-nowrap text-orange-800 ${compactBodyCellClass}`}>{classGroup.label}</td>
                           {shiftColumns.map((column, columnIndex) => {
                             const key = keyOf(date, column.id, classGroup.key);
                             const currentValue = cells[key] ?? "";
                             const warnings = ruleWarnings(date, column.shiftType, currentValue);
                             const options = selectableStaffNames(date, column.shiftType, currentValue);
                             return (
-                              <td key={`${classGroup.key}-${column.id}`} className={`p-1 ${bodyStripeClass(columnIndex)}`}>
+                              <td key={`${classGroup.key}-${column.id}`} className={`p-1 align-middle ${bodyStripeClass(columnIndex)}`}>
                                 <select
-                                  className="w-full rounded bg-white px-2 py-1 outline-none focus:bg-orange-50"
+                                  className={compactSelectClass}
                                   value={currentValue}
                                   onChange={(event) =>
                                     setCells((prev) => ({
@@ -998,12 +1061,12 @@ export default function HomePage() {
                       ));
 
                       const totalRow = (
-                        <tr key={`${date}-total`} className="border-b-2 border-orange-200 bg-orange-100/40">
-                          <td className="whitespace-nowrap px-3 py-2 font-semibold text-orange-900">合計（対人数）</td>
+                        <tr key={`${date}-total`} className="h-9 border-b-2 border-orange-200 bg-orange-100/40">
+                          <td className={`whitespace-nowrap font-semibold text-orange-900 ${compactBodyCellClass}`}>合計（対人数）</td>
                           {shiftColumns.map((column, columnIndex) => (
                             <td
                               key={`total-${date}-${column.id}`}
-                              className={`px-3 py-2 text-center text-xs text-orange-500 ${summaryStripeClass(columnIndex)}`}
+                            className={`${compactBodyCellClass} text-center text-xs text-orange-500 ${summaryStripeClass(columnIndex)}`}
                             />
                           ))}
                         </tr>
@@ -1014,13 +1077,13 @@ export default function HomePage() {
                   </tbody>
                 </table>
 
-                <table className="border-l border-orange-200 text-sm">
+                <table className={`border-l border-orange-200 ${compactClass}`}>
                   <tbody>
                     <tr className="h-[26px] bg-orange-100/70">
                       {effectiveRequiredStaffByTime.map((item, columnIndex) => (
                         <th
                           key={item.time}
-                          className={`h-[26px] whitespace-nowrap px-3 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
+                          className={`h-[26px] whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
                         >
                           {item.time}
                         </th>
@@ -1030,12 +1093,12 @@ export default function HomePage() {
                       {effectiveRequiredStaffByTime.map((item, columnIndex) => (
                         <td
                           key={`required-${item.time}`}
-                          className={`h-[26px] whitespace-nowrap px-3 py-0 align-middle font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
+                          className={`h-[26px] whitespace-nowrap px-2 py-0 align-middle font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
                         >
                           <input
                             type="number"
                             min={0}
-                            className="w-16 rounded bg-white px-2 py-0.5 text-right text-sm text-orange-900"
+                            className="w-14 rounded bg-white px-1.5 py-0.5 text-right text-xs text-orange-900"
                             value={item.requiredCount}
                             onChange={(event) =>
                               setRequiredOverrideByTime((prev) => ({
@@ -1053,14 +1116,11 @@ export default function HomePage() {
                         ...SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => {
                           const counts = assignedStaffCountByDateAndClass.get(`${date}|${classGroup.key}`) ?? REQUIRED_STAFF_TIMES.map(() => 0);
                           return (
-                            <tr
-                              key={`assigned-${date}-${classGroup.key}`}
-                              className={classIndex === 0 ? "border-t-2 border-orange-200" : undefined}
-                            >
+                            <tr key={`assigned-${date}-${classGroup.key}`} className={classIndex === 0 ? "h-9 border-t-2 border-orange-200" : "h-9"}>
                               {counts.map((count, columnIndex) => (
                                 <td
                                   key={`${date}-${classGroup.key}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
-                                  className={`whitespace-nowrap px-3 py-2 text-orange-900 ${bodyStripeClass(columnIndex)}`}
+                                  className={`whitespace-nowrap px-2 py-1.5 text-orange-900 ${bodyStripeClass(columnIndex)}`}
                                 >
                                   {count}人
                                 </td>
@@ -1068,11 +1128,11 @@ export default function HomePage() {
                             </tr>
                           );
                         }),
-                        <tr key={`assigned-${date}-total`} className="border-b-2 border-orange-200 bg-orange-100/40">
+                        <tr key={`assigned-${date}-total`} className="h-9 border-b-2 border-orange-200 bg-orange-100/40">
                           {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
                             <td
                               key={`${date}-total-${REQUIRED_STAFF_TIMES[columnIndex]}`}
-                              className={`whitespace-nowrap px-3 py-2 font-semibold ${
+                              className={`whitespace-nowrap px-2 py-1.5 font-semibold ${
                                 count < (effectiveRequiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
                               } ${summaryStripeClass(columnIndex)}`}
                             >
@@ -1085,16 +1145,16 @@ export default function HomePage() {
                   </tbody>
                 </table>
               </div>
-            ) : (
+              ) : (
               <div className="flex min-w-max items-start">
-                <table className="min-w-full text-sm">
+                <table className={`min-w-full ${compactClass}`}>
                   <thead className="bg-orange-100/70">
                     <tr>
-                      <th className="px-3 py-2 text-left font-semibold text-orange-900">日付</th>
+                      <th className={`${compactHeadCellClass} text-left font-semibold text-orange-900`}>日付</th>
                       {allStaffNames.map((name, index) => (
                         <th
                           key={`${name}-${index}`}
-                          className={`whitespace-nowrap px-3 py-2 text-center font-semibold text-orange-900 ${headerStripeClass(index)}`}
+                          className={`whitespace-nowrap ${compactHeadCellClass} text-center font-semibold text-orange-900 ${headerStripeClass(index)}`}
                         >
                           {name}
                         </th>
@@ -1110,7 +1170,7 @@ export default function HomePage() {
                       const assignmentMap = primaryAssignmentByDateAndStaff.get(date) ?? new Map<string, { shiftType: string; classGroup: ShiftClassGroup; count: number }>();
                       return (
                         <tr key={`staff-view-${date}`} className="border-t border-orange-100 odd:bg-orange-50/30">
-                          <td className={`whitespace-nowrap px-3 py-2 text-center font-semibold ${dateTextClass}`}>{dateText}</td>
+                          <td className={`whitespace-nowrap ${compactBodyCellClass} text-center font-semibold ${dateTextClass}`}>{dateText}</td>
                           {allStaffNames.map((name, index) => {
                             const assignment = assignmentMap.get(name);
                             const offKey = `${date}|${name}`;
@@ -1121,10 +1181,10 @@ export default function HomePage() {
                             return (
                               <td
                                 key={`staff-view-${date}-${name}-${index}`}
-                                className={`whitespace-nowrap px-3 py-2 text-center text-orange-900 ${bodyStripeClass(index)}`}
+                                className={`whitespace-nowrap ${compactBodyCellClass} text-center text-orange-900 ${bodyStripeClass(index)}`}
                               >
                                 <select
-                                  className="w-full rounded bg-white px-2 py-1 text-sm outline-none focus:bg-orange-50"
+                                  className={compactSelectClass}
                                   value={currentShiftType}
                                   onChange={(event) => setStaffShiftForDate(date, name, event.target.value)}
                                 >
@@ -1148,13 +1208,13 @@ export default function HomePage() {
                   </tbody>
                 </table>
 
-                <table className="border-l border-orange-200 text-sm">
+                <table className={`border-l border-orange-200 ${compactClass}`}>
                   <tbody>
                     <tr className="h-[26px] bg-orange-100/70">
                       {effectiveRequiredStaffByTime.map((item, columnIndex) => (
                         <th
                           key={`staff-required-time-${item.time}`}
-                          className={`h-[26px] whitespace-nowrap px-3 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
+                          className={`h-[26px] whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
                         >
                           {item.time}
                         </th>
@@ -1164,12 +1224,12 @@ export default function HomePage() {
                       {effectiveRequiredStaffByTime.map((item, columnIndex) => (
                         <td
                           key={`staff-required-count-${item.time}`}
-                          className={`h-[26px] whitespace-nowrap px-3 py-0 align-middle font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
+                          className={`h-[26px] whitespace-nowrap px-2 py-0 align-middle font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
                         >
                           <input
                             type="number"
                             min={0}
-                            className="w-16 rounded bg-white px-2 py-0.5 text-right text-sm text-orange-900"
+                            className="w-14 rounded bg-white px-1.5 py-0.5 text-right text-xs text-orange-900"
                             value={item.requiredCount}
                             onChange={(event) =>
                               setRequiredOverrideByTime((prev) => ({
@@ -1187,7 +1247,7 @@ export default function HomePage() {
                         {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
                           <td
                             key={`staff-total-${date}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
-                            className={`whitespace-nowrap px-3 py-2 font-semibold ${
+                            className={`whitespace-nowrap px-2 py-1.5 font-semibold ${
                               count < (effectiveRequiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
                             } ${bodyStripeClass(columnIndex)}`}
                           >
@@ -1199,7 +1259,8 @@ export default function HomePage() {
                   </tbody>
                 </table>
               </div>
-            )}
+              )}
+            </div>
           </div>
         </section>
 
