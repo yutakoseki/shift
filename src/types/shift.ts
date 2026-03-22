@@ -21,8 +21,14 @@ export type ShiftColumn = {
   shiftType: ShiftType;
 };
 
+export type RequiredStaffByTime = {
+  time: string;
+  requiredCount: number;
+};
+
 export type ShiftMonthResponse = {
   month: string;
   entries: ShiftEntry[];
   columns?: ShiftColumn[];
+  requiredByTime?: RequiredStaffByTime[];
 };

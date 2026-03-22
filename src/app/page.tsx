@@ -156,6 +156,7 @@ export default function HomePage() {
   const [addColumnShiftType, setAddColumnShiftType] = useState("");
   const [deleteTargetColumnId, setDeleteTargetColumnId] = useState<string | null>(null);
   const [showShortageModal, setShowShortageModal] = useState(false);
+  const [requiredOverrideByTime, setRequiredOverrideByTime] = useState<Record<string, number>>({});
   const [viewMode, setViewMode] = useState<"class" | "staff">("class");
 
   const dates = useMemo(() => monthToDates(month), [month]);
@@ -255,6 +256,16 @@ export default function HomePage() {
     });
   }, [masterData, month]);
 
+  const effectiveRequiredStaffByTime = useMemo(() => {
+    return requiredStaffByTime.map((item) => ({
+      time: item.time,
+      requiredCount:
+        requiredOverrideByTime[item.time] !== undefined && Number.isFinite(requiredOverrideByTime[item.time])
+          ? Math.max(0, requiredOverrideByTime[item.time])
+          : item.requiredCount
+    }));
+  }, [requiredOverrideByTime, requiredStaffByTime]);
+
   const assignedStaffCountByDateAndClass = useMemo(() => {
     const countByDateAndClass = new Map<string, number[]>();
     for (const date of dates) {
@@ -319,7 +330,7 @@ export default function HomePage() {
     const items: ShortageItem[] = [];
     for (const date of dates) {
       const assignedCounts = assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
-      requiredStaffByTime.forEach((required, index) => {
+      effectiveRequiredStaffByTime.forEach((required, index) => {
         const assigned = assignedCounts[index] ?? 0;
         if (assigned < required.requiredCount) {
           items.push({
@@ -332,7 +343,7 @@ export default function HomePage() {
       });
     }
     return items;
-  }, [assignedTotalStaffCountByDate, dates, requiredStaffByTime]);
+  }, [assignedTotalStaffCountByDate, dates, effectiveRequiredStaffByTime]);
 
   const assignedStaffCountByDateAndName = useMemo(() => {
     const countByDate = new Map<string, Map<string, number>>();
@@ -468,6 +479,13 @@ export default function HomePage() {
       }
       setCells(nextCells);
       setOffByDateAndStaff(nextOffByDateAndStaff);
+      const nextRequiredOverrideByTime: Record<string, number> = {};
+      (data.requiredByTime ?? []).forEach((item) => {
+        if (Number.isFinite(item.requiredCount) && item.requiredCount >= 0) {
+          nextRequiredOverrideByTime[item.time] = item.requiredCount;
+        }
+      });
+      setRequiredOverrideByTime(nextRequiredOverrideByTime);
     } finally {
       setLoadingData(false);
     }
@@ -511,6 +529,13 @@ export default function HomePage() {
     [cells, dates, offByDateAndStaff]
   );
 
+  const buildRequiredByTimePayload = useCallback(() => {
+    return effectiveRequiredStaffByTime.map((item) => ({
+      time: item.time,
+      requiredCount: item.requiredCount
+    }));
+  }, [effectiveRequiredStaffByTime]);
+
   const persistShiftColumns = useCallback(
     async (columns: ShiftColumn[]): Promise<void> => {
       const response = await fetch("/api/shifts", {
@@ -519,14 +544,15 @@ export default function HomePage() {
         body: JSON.stringify({
           month,
           entries: buildEntriesFromColumns(columns),
-          columns
+          columns,
+          requiredByTime: buildRequiredByTimePayload()
         })
       });
       if (!response.ok) {
         throw new Error("列構成の保存に失敗しました");
       }
     },
-    [buildEntriesFromColumns, month]
+    [buildEntriesFromColumns, buildRequiredByTimePayload, month]
   );
 
   useEffect(() => {
@@ -539,7 +565,12 @@ export default function HomePage() {
       const response = await fetch("/api/shifts", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ month, entries: buildEntriesFromColumns(shiftColumns), columns: shiftColumns })
+        body: JSON.stringify({
+          month,
+          entries: buildEntriesFromColumns(shiftColumns),
+          columns: shiftColumns,
+          requiredByTime: buildRequiredByTimePayload()
+        })
       });
       if (!response.ok) {
         throw new Error("保存に失敗しました");
@@ -973,7 +1004,7 @@ export default function HomePage() {
                 <table className="border-l border-orange-200 text-sm">
                   <tbody>
                     <tr className="h-[26px] bg-orange-100/70">
-                      {requiredStaffByTime.map((item, columnIndex) => (
+                      {effectiveRequiredStaffByTime.map((item, columnIndex) => (
                         <th
                           key={item.time}
                           className={`h-[26px] whitespace-nowrap px-3 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
@@ -983,12 +1014,24 @@ export default function HomePage() {
                       ))}
                     </tr>
                     <tr className="h-[26px] odd:bg-orange-50/50">
-                      {requiredStaffByTime.map((item, columnIndex) => (
+                      {effectiveRequiredStaffByTime.map((item, columnIndex) => (
                         <td
                           key={`required-${item.time}`}
                           className={`h-[26px] whitespace-nowrap px-3 py-0 align-middle font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
                         >
-                          {item.requiredCount}人
+                          <input
+                            type="number"
+                            min={0}
+                            className="w-16 rounded bg-white px-2 py-0.5 text-right text-sm text-orange-900"
+                            value={item.requiredCount}
+                            onChange={(event) =>
+                              setRequiredOverrideByTime((prev) => ({
+                                ...prev,
+                                [item.time]: Math.max(0, Number(event.target.value) || 0)
+                              }))
+                            }
+                          />
+                          <span className="ml-1">人</span>
                         </td>
                       ))}
                     </tr>
@@ -1017,7 +1060,7 @@ export default function HomePage() {
                             <td
                               key={`${date}-total-${REQUIRED_STAFF_TIMES[columnIndex]}`}
                               className={`whitespace-nowrap px-3 py-2 font-semibold ${
-                                count < (requiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
+                                count < (effectiveRequiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
                               } ${summaryStripeClass(columnIndex)}`}
                             >
                               {count}人
@@ -1095,7 +1138,7 @@ export default function HomePage() {
                 <table className="border-l border-orange-200 text-sm">
                   <tbody>
                     <tr className="h-[26px] bg-orange-100/70">
-                      {requiredStaffByTime.map((item, columnIndex) => (
+                      {effectiveRequiredStaffByTime.map((item, columnIndex) => (
                         <th
                           key={`staff-required-time-${item.time}`}
                           className={`h-[26px] whitespace-nowrap px-3 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
@@ -1105,12 +1148,24 @@ export default function HomePage() {
                       ))}
                     </tr>
                     <tr className="h-[26px]">
-                      {requiredStaffByTime.map((item, columnIndex) => (
+                      {effectiveRequiredStaffByTime.map((item, columnIndex) => (
                         <td
                           key={`staff-required-count-${item.time}`}
                           className={`h-[26px] whitespace-nowrap px-3 py-0 align-middle font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
                         >
-                          {item.requiredCount}人
+                          <input
+                            type="number"
+                            min={0}
+                            className="w-16 rounded bg-white px-2 py-0.5 text-right text-sm text-orange-900"
+                            value={item.requiredCount}
+                            onChange={(event) =>
+                              setRequiredOverrideByTime((prev) => ({
+                                ...prev,
+                                [item.time]: Math.max(0, Number(event.target.value) || 0)
+                              }))
+                            }
+                          />
+                          <span className="ml-1">人</span>
                         </td>
                       ))}
                     </tr>
@@ -1120,7 +1175,7 @@ export default function HomePage() {
                           <td
                             key={`staff-total-${date}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
                             className={`whitespace-nowrap px-3 py-2 font-semibold ${
-                              count < (requiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
+                              count < (effectiveRequiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
                             } ${bodyStripeClass(columnIndex)}`}
                           >
                             {count}人
