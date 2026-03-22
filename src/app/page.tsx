@@ -1253,19 +1253,26 @@ export default function HomePage() {
               </div>
               ) : (
               <div className="flex min-w-max items-start">
-                <table className={`min-w-full ${compactClass}`}>
+                <table className={`min-w-max ${compactClass}`}>
                   <thead className="bg-orange-100/70">
-                    <tr>
-                      <th className={`${compactHeadCellClass} text-center font-semibold text-orange-900`}>日付</th>
+                    <tr className="h-[26px]">
+                      <th
+                        rowSpan={2}
+                        className={`w-20 min-w-20 ${compactHeadCellClass} text-center align-middle font-semibold text-orange-900`}
+                      >
+                        日付
+                      </th>
                       {allStaffNames.map((name, index) => (
                         <th
                           key={`${name}-${index}`}
-                          className={`whitespace-nowrap ${compactHeadCellClass} text-center font-semibold text-orange-900 ${headerStripeClass(index)}`}
+                          rowSpan={2}
+                          className={`w-16 min-w-16 whitespace-nowrap px-1 py-1 text-center text-[11px] font-semibold text-orange-900 ${headerStripeClass(index)}`}
                         >
-                          {name}
+                          <span className="block truncate">{name}</span>
                         </th>
                       ))}
                     </tr>
+                    <tr className="h-[26px]" />
                   </thead>
                   <tbody>
                     {dates.map((date) => {
@@ -1275,8 +1282,10 @@ export default function HomePage() {
                       const rowMap = shiftCodesByDateAndStaff.get(date) ?? new Map<string, string>();
                       const assignmentMap = primaryAssignmentByDateAndStaff.get(date) ?? new Map<string, { shiftType: string; classGroup: ShiftClassGroup; count: number }>();
                       return (
-                        <tr key={`staff-view-${date}`} className="border-t border-orange-100 odd:bg-orange-50/30">
-                          <td className={`whitespace-nowrap ${compactBodyCellClass} text-center font-semibold ${dateTextClass}`}>{dateText}</td>
+                        <tr key={`staff-view-${date}`} className="h-9 border-t border-orange-100 odd:bg-orange-50/30">
+                          <td className={`h-9 w-20 min-w-20 whitespace-nowrap ${compactBodyCellClass} text-center align-middle font-semibold ${dateTextClass}`}>
+                            {dateText}
+                          </td>
                           {allStaffNames.map((name, index) => {
                             const assignment = assignmentMap.get(name);
                             const offKey = `${date}|${name}`;
@@ -1287,10 +1296,10 @@ export default function HomePage() {
                             return (
                               <td
                                 key={`staff-view-${date}-${name}-${index}`}
-                                className={`whitespace-nowrap ${compactBodyCellClass} text-center text-orange-900 ${bodyStripeClass(index)}`}
+                                className={`h-9 w-16 min-w-16 whitespace-nowrap px-1 py-1 text-center align-middle text-orange-900 ${bodyStripeClass(index)}`}
                               >
                                 <select
-                                  className={compactSelectClass}
+                                  className="h-7 w-full rounded bg-white px-1 py-0.5 text-center text-[11px] outline-none focus:bg-orange-50"
                                   value={currentShiftType}
                                   onChange={(event) => setStaffShiftForDate(date, name, event.target.value)}
                                 >
@@ -1373,11 +1382,11 @@ export default function HomePage() {
                       ))}
                     </tr>
                     {dates.map((date) => (
-                      <tr key={`staff-total-${date}`} className="border-t border-orange-100 odd:bg-orange-50/30">
+                      <tr key={`staff-total-${date}`} className="h-9 border-t border-orange-100 odd:bg-orange-50/30">
                         {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
                           <td
                             key={`staff-total-${date}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
-                            className={`whitespace-nowrap px-2 py-1.5 text-center font-semibold ${
+                            className={`h-9 whitespace-nowrap px-2 py-0 text-center align-middle font-semibold ${
                               count < (effectiveRequiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
                             } ${bodyStripeClass(columnIndex)}`}
                           >
@@ -1385,19 +1394,19 @@ export default function HomePage() {
                           </td>
                         ))}
                         <td
-                          className={`whitespace-nowrap px-2 py-1.5 text-center text-orange-900 ${bodyStripeClass(
+                          className={`h-9 whitespace-nowrap px-2 py-0 text-center align-middle text-orange-900 ${bodyStripeClass(
                             effectiveRequiredStaffByTime.length
                           )}`}
                         >
                           {offStaffTextByDate.get(date) ?? ""}
                         </td>
                         <td
-                          className={`px-2 py-1.5 text-center ${bodyStripeClass(
+                          className={`h-9 px-2 py-0 text-center align-middle ${bodyStripeClass(
                             effectiveRequiredStaffByTime.length + 1
                           )}`}
                         >
                           <textarea
-                            className="mx-auto h-20 w-44 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                            className="mx-auto h-6 w-44 resize-none rounded bg-white px-2 py-0.5 text-xs leading-tight text-orange-900"
                             value={eventByDate[date] ?? ""}
                             onChange={(event) =>
                               setEventByDate((prev) => ({
@@ -1408,12 +1417,12 @@ export default function HomePage() {
                           />
                         </td>
                         <td
-                          className={`px-2 py-1.5 text-center ${bodyStripeClass(
+                          className={`h-9 px-2 py-0 text-center align-middle ${bodyStripeClass(
                             effectiveRequiredStaffByTime.length + 2
                           )}`}
                         >
                           <textarea
-                            className="mx-auto h-20 w-56 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                            className="mx-auto h-6 w-56 resize-none rounded bg-white px-2 py-0.5 text-xs leading-tight text-orange-900"
                             value={noteByDate[date] ?? ""}
                             onChange={(event) =>
                               setNoteByDate((prev) => ({
