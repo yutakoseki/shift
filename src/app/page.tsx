@@ -21,6 +21,8 @@ const REQUIRED_STAFF_TIMES = [
   "18:30"
 ] as const;
 
+const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"] as const;
+
 function monthToDates(month: string): string[] {
   const [yearText, monthText] = month.split("-");
   const year = Number(yearText);
@@ -93,6 +95,23 @@ function resolveRatioForAge(age: number, ratioByAge: Map<number, number>): numbe
     }
   }
   return null;
+}
+
+function weekdayFromDateText(date: string): number {
+  const [yearText, monthText, dayText] = date.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return 0;
+  }
+  return new Date(year, month - 1, day).getDay();
+}
+
+function dayLabelFromDateText(date: string): string {
+  const [_, __, dayText] = date.split("-");
+  const dayNumber = Number(dayText);
+  return Number.isFinite(dayNumber) ? String(dayNumber) : date;
 }
 
 export default function HomePage() {
@@ -369,7 +388,17 @@ export default function HomePage() {
                 <tbody>
                   {dates.map((date) => (
                     <tr key={date} className="odd:bg-orange-50/50">
-                      <td className="px-3 py-2 text-orange-900">{date}</td>
+                      <td
+                        className={`px-3 py-2 ${
+                          weekdayFromDateText(date) === 0
+                            ? "text-red-600"
+                            : weekdayFromDateText(date) === 6
+                              ? "text-blue-600"
+                              : "text-orange-900"
+                        }`}
+                      >
+                        {`${dayLabelFromDateText(date)} (${WEEKDAY_LABELS[weekdayFromDateText(date)]})`}
+                      </td>
                       {shiftTypes.map((shiftType) => {
                         const key = keyOf(date, shiftType);
                         const warnings = ruleWarnings(date, shiftType, cells[key] ?? "");
