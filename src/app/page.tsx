@@ -145,6 +145,7 @@ export default function HomePage() {
   const [masterData, setMasterData] = useState<MasterData | null>(null);
   const [month, setMonth] = useState(currentMonth);
   const [cells, setCells] = useState<Record<string, string>>({});
+  const [offByDateAndStaff, setOffByDateAndStaff] = useState<Record<string, boolean>>({});
   const [shiftColumns, setShiftColumns] = useState<ShiftColumn[]>([
     { id: createShiftColumnId("早番"), shiftType: "早番" },
     { id: createShiftColumnId("中番"), shiftType: "中番" },
@@ -351,6 +352,34 @@ export default function HomePage() {
     return countByDate;
   }, [cells, dates, shiftColumns]);
 
+  const selectableShiftTypesForStaffView = useMemo(
+    () => Array.from(new Set(shiftColumns.map((column) => column.shiftType))),
+    [shiftColumns]
+  );
+
+  const primaryAssignmentByDateAndStaff = useMemo(() => {
+    const result = new Map<string, Map<string, { shiftType: string; classGroup: ShiftClassGroup; count: number }>>();
+    for (const date of dates) {
+      const byStaff = new Map<string, { shiftType: string; classGroup: ShiftClassGroup; count: number }>();
+      for (const classGroup of SHIFT_CLASS_GROUPS) {
+        for (const column of shiftColumns) {
+          const staffName = (cells[keyOf(date, column.id, classGroup.key)] ?? "").trim();
+          if (!staffName) {
+            continue;
+          }
+          const current = byStaff.get(staffName);
+          if (!current) {
+            byStaff.set(staffName, { shiftType: column.shiftType, classGroup: classGroup.key, count: 1 });
+          } else {
+            byStaff.set(staffName, { ...current, count: current.count + 1 });
+          }
+        }
+      }
+      result.set(date, byStaff);
+    }
+    return result;
+  }, [cells, dates, shiftColumns]);
+
   const shiftCodesByDateAndStaff = useMemo(() => {
     const result = new Map<string, Map<string, string>>();
     for (const date of dates) {
@@ -386,6 +415,7 @@ export default function HomePage() {
       }
       const data = (await response.json()) as ShiftMonthResponse;
       const nextCells: Record<string, string> = {};
+      const nextOffByDateAndStaff: Record<string, boolean> = {};
       const loadedColumns: ShiftColumn[] = [];
       const firstColumnIdByShiftType = new Map<string, string>();
 
@@ -422,6 +452,13 @@ export default function HomePage() {
       }
 
       for (const entry of data.entries) {
+        if (entry.shiftType === "休み") {
+          const staffName = entry.staffName.trim();
+          if (staffName) {
+            nextOffByDateAndStaff[`${entry.date}|${staffName}`] = true;
+          }
+          continue;
+        }
         const classGroup = entry.classGroup ?? "0-1";
         const columnId = entry.columnKey ?? firstColumnIdByShiftType.get(entry.shiftType);
         if (!columnId) {
@@ -430,6 +467,7 @@ export default function HomePage() {
         nextCells[keyOf(entry.date, columnId, classGroup)] = entry.staffName;
       }
       setCells(nextCells);
+      setOffByDateAndStaff(nextOffByDateAndStaff);
     } finally {
       setLoadingData(false);
     }
@@ -454,9 +492,23 @@ export default function HomePage() {
           }
         }
       }
+      for (const recordKey of Object.keys(offByDateAndStaff)) {
+        if (!offByDateAndStaff[recordKey]) {
+          continue;
+        }
+        const [date, staffName] = recordKey.split("|");
+        if (!date || !staffName) {
+          continue;
+        }
+        entries.push({
+          date,
+          shiftType: "休み",
+          staffName
+        });
+      }
       return entries;
     },
-    [cells, dates]
+    [cells, dates, offByDateAndStaff]
   );
 
   const persistShiftColumns = useCallback(
@@ -590,12 +642,60 @@ export default function HomePage() {
     const countByName = assignedStaffCountByDateAndName.get(date) ?? new Map<string, number>();
     const normalizedCurrentValue = currentValue.trim();
     return allStaffNames.filter((name) => {
+      const offKey = `${date}|${name}`;
+      const isOff = offByDateAndStaff[offKey] === true;
+      if (isOff && name !== normalizedCurrentValue) {
+        return false;
+      }
       if (!canWorkOnShift(date, shiftType, name)) {
         return false;
       }
       const currentCount = countByName.get(name) ?? 0;
       const usedByOtherCell = name === normalizedCurrentValue ? currentCount - 1 : currentCount;
       return usedByOtherCell <= 0;
+    });
+  }
+
+  function setStaffShiftForDate(date: string, staffName: string, nextShiftType: string): void {
+    setCells((prev) => {
+      const nextCells = { ...prev };
+      let existingClassGroup: ShiftClassGroup = "0-1";
+      let foundExisting = false;
+
+      for (const classGroup of SHIFT_CLASS_GROUPS) {
+        for (const column of shiftColumns) {
+          const currentKey = keyOf(date, column.id, classGroup.key);
+          if ((nextCells[currentKey] ?? "").trim() === staffName) {
+            if (!foundExisting) {
+              existingClassGroup = classGroup.key;
+              foundExisting = true;
+            }
+            nextCells[currentKey] = "";
+          }
+        }
+      }
+
+      if (!nextShiftType) {
+        return nextCells;
+      }
+
+      const targetColumn = shiftColumns.find((column) => column.shiftType === nextShiftType);
+      if (!targetColumn) {
+        return nextCells;
+      }
+
+      nextCells[keyOf(date, targetColumn.id, existingClassGroup)] = staffName;
+      return nextCells;
+    });
+    setOffByDateAndStaff((prev) => {
+      const key = `${date}|${staffName}`;
+      const next = { ...prev };
+      if (nextShiftType === "__OFF__") {
+        next[key] = true;
+      } else {
+        delete next[key];
+      }
+      return next;
     });
   }
 
@@ -950,17 +1050,41 @@ export default function HomePage() {
                     const dateText = `${dayLabelFromDateText(date)} (${WEEKDAY_LABELS[weekday]})`;
                     const dateTextClass = weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
                     const rowMap = shiftCodesByDateAndStaff.get(date) ?? new Map<string, string>();
+                    const assignmentMap = primaryAssignmentByDateAndStaff.get(date) ?? new Map<string, { shiftType: string; classGroup: ShiftClassGroup; count: number }>();
                     return (
                       <tr key={`staff-view-${date}`} className="border-t border-orange-100 odd:bg-orange-50/30">
                         <td className={`whitespace-nowrap px-3 py-2 text-center font-semibold ${dateTextClass}`}>{dateText}</td>
-                        {allStaffNames.map((name, index) => (
+                        {allStaffNames.map((name, index) => {
+                          const assignment = assignmentMap.get(name);
+                          const offKey = `${date}|${name}`;
+                          const currentShiftType = offByDateAndStaff[offKey] ? "__OFF__" : assignment?.shiftType ?? "";
+                          const selectable = selectableShiftTypesForStaffView.filter(
+                            (shiftType) => shiftType === currentShiftType || canWorkOnShift(date, shiftType, name)
+                          );
+                          return (
                           <td
                             key={`staff-view-${date}-${name}-${index}`}
                             className={`whitespace-nowrap px-3 py-2 text-center text-orange-900 ${bodyStripeClass(index)}`}
                           >
-                            {rowMap.get(name) ?? ""}
+                            <select
+                              className="w-full rounded bg-white px-2 py-1 text-sm outline-none focus:bg-orange-50"
+                              value={currentShiftType}
+                              onChange={(event) => setStaffShiftForDate(date, name, event.target.value)}
+                            >
+                              <option value="" />
+                              <option value="__OFF__">休み</option>
+                              {selectable.map((shiftType) => (
+                                <option key={`${date}-${name}-${shiftType}`} value={shiftType}>
+                                  {shiftType}
+                                </option>
+                              ))}
+                            </select>
+                            {assignment && assignment.count > 1 ? (
+                              <p className="mt-1 text-[10px] text-red-600">{rowMap.get(name)}</p>
+                            ) : null}
                           </td>
-                        ))}
+                          );
+                        })}
                       </tr>
                     );
                   })}
