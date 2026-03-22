@@ -776,7 +776,7 @@ export default function HomePage() {
   const compactClass = "text-[12px]";
   const compactHeadCellClass = "px-2 py-1.5";
   const compactBodyCellClass = "px-2 py-1.5";
-  const compactSelectClass = "w-full rounded bg-white px-1.5 py-1 text-xs outline-none focus:bg-orange-50";
+  const compactSelectClass = "w-full rounded bg-white px-1.5 py-1 text-center text-xs outline-none focus:bg-orange-50";
 
   useEffect(() => {
     const updateTopScrollWidth = (): void => {
@@ -998,8 +998,8 @@ export default function HomePage() {
                 <table className={compactClass}>
                   <thead>
                     <tr>
-                      <th className={`h-[52px] bg-orange-100/70 text-left align-middle font-semibold text-orange-900 ${compactHeadCellClass}`}>日付</th>
-                      <th className={`h-[52px] bg-orange-100/70 text-left align-middle font-semibold text-orange-900 ${compactHeadCellClass}`}>クラス区分</th>
+                      <th className={`h-[52px] bg-orange-100/70 text-center align-middle font-semibold text-orange-900 ${compactHeadCellClass}`}>日付</th>
+                      <th className={`h-[52px] bg-orange-100/70 text-center align-middle font-semibold text-orange-900 ${compactHeadCellClass}`}>クラス区分</th>
                       {shiftColumns.map((column, columnIndex) => (
                         <th
                           key={column.id}
@@ -1062,14 +1062,14 @@ export default function HomePage() {
                               {dateText}
                             </td>
                           ) : null}
-                          <td className={`whitespace-nowrap text-orange-800 ${compactBodyCellClass}`}>{classGroup.label}</td>
+                          <td className={`whitespace-nowrap text-center text-orange-800 ${compactBodyCellClass}`}>{classGroup.label}</td>
                           {shiftColumns.map((column, columnIndex) => {
                             const key = keyOf(date, column.id, classGroup.key);
                             const currentValue = cells[key] ?? "";
                             const warnings = ruleWarnings(date, column.shiftType, currentValue);
                             const options = selectableStaffNames(date, column.shiftType, currentValue);
                             return (
-                              <td key={`${classGroup.key}-${column.id}`} className={`p-1 align-middle ${bodyStripeClass(columnIndex)}`}>
+                              <td key={`${classGroup.key}-${column.id}`} className={`p-1 text-center align-middle ${bodyStripeClass(columnIndex)}`}>
                                 <select
                                   className={compactSelectClass}
                                   value={currentValue}
@@ -1117,19 +1117,34 @@ export default function HomePage() {
                       {effectiveRequiredStaffByTime.map((item, columnIndex) => (
                         <th
                           key={item.time}
-                          className={`h-[26px] whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
+                          className={`h-[26px] whitespace-nowrap px-2 py-0 text-center align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
                         >
                           {item.time}
                         </th>
                       ))}
-                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
-                        休み
+                      <th
+                        rowSpan={2}
+                        className={`whitespace-nowrap px-2 py-0 text-center align-middle font-semibold text-orange-900 ${headerStripeClass(
+                          effectiveRequiredStaffByTime.length
+                        )}`}
+                      >
+                        <span className="block text-center">休み</span>
                       </th>
-                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
-                        イベント
+                      <th
+                        rowSpan={2}
+                        className={`whitespace-nowrap px-2 py-0 text-center align-middle font-semibold text-orange-900 ${headerStripeClass(
+                          effectiveRequiredStaffByTime.length + 1
+                        )}`}
+                      >
+                        <span className="block text-center">イベント</span>
                       </th>
-                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
-                        備考
+                      <th
+                        rowSpan={2}
+                        className={`whitespace-nowrap px-2 py-0 text-center align-middle font-semibold text-orange-900 ${headerStripeClass(
+                          effectiveRequiredStaffByTime.length + 2
+                        )}`}
+                      >
+                        <span className="block text-center">備考</span>
                       </th>
                     </tr>
                     <tr className="h-[26px] odd:bg-orange-50/50">
@@ -1163,20 +1178,30 @@ export default function HomePage() {
                               {counts.map((count, columnIndex) => (
                                 <td
                                   key={`${date}-${classGroup.key}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
-                                  className={`whitespace-nowrap px-2 py-1.5 text-orange-900 ${bodyStripeClass(columnIndex)}`}
+                                  className={`whitespace-nowrap px-2 py-1.5 text-center text-orange-900 ${bodyStripeClass(columnIndex)}`}
                                 >
                                   {count}人
                                 </td>
                               ))}
                               {classIndex === 0 ? (
-                                <td rowSpan={DATE_GROUP_ROW_COUNT} className="whitespace-nowrap px-2 py-1.5 align-middle text-orange-900">
+                                <td
+                                  rowSpan={DATE_GROUP_ROW_COUNT}
+                                  className={`whitespace-nowrap px-2 py-1.5 text-center align-middle text-orange-900 ${bodyStripeClass(
+                                    effectiveRequiredStaffByTime.length
+                                  )}`}
+                                >
                                   {offStaffTextByDate.get(date) ?? ""}
                                 </td>
                               ) : null}
                               {classIndex === 0 ? (
-                                <td rowSpan={DATE_GROUP_ROW_COUNT} className="px-2 py-1.5 align-middle">
+                                <td
+                                  rowSpan={DATE_GROUP_ROW_COUNT}
+                                  className={`px-2 py-1.5 text-center align-middle ${bodyStripeClass(
+                                    effectiveRequiredStaffByTime.length + 1
+                                  )}`}
+                                >
                                   <textarea
-                                    className="h-24 w-44 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                                    className="mx-auto h-24 w-44 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
                                     value={eventByDate[date] ?? ""}
                                     onChange={(event) =>
                                       setEventByDate((prev) => ({
@@ -1188,9 +1213,14 @@ export default function HomePage() {
                                 </td>
                               ) : null}
                               {classIndex === 0 ? (
-                                <td rowSpan={DATE_GROUP_ROW_COUNT} className="px-2 py-1.5 align-middle">
+                                <td
+                                  rowSpan={DATE_GROUP_ROW_COUNT}
+                                  className={`px-2 py-1.5 text-center align-middle ${bodyStripeClass(
+                                    effectiveRequiredStaffByTime.length + 2
+                                  )}`}
+                                >
                                   <textarea
-                                    className="h-24 w-56 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                                    className="mx-auto h-24 w-56 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
                                     value={noteByDate[date] ?? ""}
                                     onChange={(event) =>
                                       setNoteByDate((prev) => ({
@@ -1208,7 +1238,7 @@ export default function HomePage() {
                           {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
                             <td
                               key={`${date}-total-${REQUIRED_STAFF_TIMES[columnIndex]}`}
-                              className={`whitespace-nowrap px-2 py-1.5 font-semibold ${
+                              className={`whitespace-nowrap px-2 py-1.5 text-center font-semibold ${
                                 count < (effectiveRequiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
                               } ${summaryStripeClass(columnIndex)}`}
                             >
@@ -1226,7 +1256,7 @@ export default function HomePage() {
                 <table className={`min-w-full ${compactClass}`}>
                   <thead className="bg-orange-100/70">
                     <tr>
-                      <th className={`${compactHeadCellClass} text-left font-semibold text-orange-900`}>日付</th>
+                      <th className={`${compactHeadCellClass} text-center font-semibold text-orange-900`}>日付</th>
                       {allStaffNames.map((name, index) => (
                         <th
                           key={`${name}-${index}`}
@@ -1290,19 +1320,34 @@ export default function HomePage() {
                       {effectiveRequiredStaffByTime.map((item, columnIndex) => (
                         <th
                           key={`staff-required-time-${item.time}`}
-                          className={`h-[26px] whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
+                          className={`h-[26px] whitespace-nowrap px-2 py-0 text-center align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
                         >
                           {item.time}
                         </th>
                       ))}
-                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
-                        休み
+                      <th
+                        rowSpan={2}
+                        className={`whitespace-nowrap px-2 py-0 text-center align-middle font-semibold text-orange-900 ${headerStripeClass(
+                          effectiveRequiredStaffByTime.length
+                        )}`}
+                      >
+                        <span className="block text-center">休み</span>
                       </th>
-                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
-                        イベント
+                      <th
+                        rowSpan={2}
+                        className={`whitespace-nowrap px-2 py-0 text-center align-middle font-semibold text-orange-900 ${headerStripeClass(
+                          effectiveRequiredStaffByTime.length + 1
+                        )}`}
+                      >
+                        <span className="block text-center">イベント</span>
                       </th>
-                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
-                        備考
+                      <th
+                        rowSpan={2}
+                        className={`whitespace-nowrap px-2 py-0 text-center align-middle font-semibold text-orange-900 ${headerStripeClass(
+                          effectiveRequiredStaffByTime.length + 2
+                        )}`}
+                      >
+                        <span className="block text-center">備考</span>
                       </th>
                     </tr>
                     <tr className="h-[26px]">
@@ -1332,17 +1377,27 @@ export default function HomePage() {
                         {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
                           <td
                             key={`staff-total-${date}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
-                            className={`whitespace-nowrap px-2 py-1.5 font-semibold ${
+                            className={`whitespace-nowrap px-2 py-1.5 text-center font-semibold ${
                               count < (effectiveRequiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
                             } ${bodyStripeClass(columnIndex)}`}
                           >
                             {count}人
                           </td>
                         ))}
-                        <td className="whitespace-nowrap px-2 py-1.5 text-orange-900">{offStaffTextByDate.get(date) ?? ""}</td>
-                        <td className="px-2 py-1.5">
+                        <td
+                          className={`whitespace-nowrap px-2 py-1.5 text-center text-orange-900 ${bodyStripeClass(
+                            effectiveRequiredStaffByTime.length
+                          )}`}
+                        >
+                          {offStaffTextByDate.get(date) ?? ""}
+                        </td>
+                        <td
+                          className={`px-2 py-1.5 text-center ${bodyStripeClass(
+                            effectiveRequiredStaffByTime.length + 1
+                          )}`}
+                        >
                           <textarea
-                            className="h-20 w-44 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                            className="mx-auto h-20 w-44 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
                             value={eventByDate[date] ?? ""}
                             onChange={(event) =>
                               setEventByDate((prev) => ({
@@ -1352,9 +1407,13 @@ export default function HomePage() {
                             }
                           />
                         </td>
-                        <td className="px-2 py-1.5">
+                        <td
+                          className={`px-2 py-1.5 text-center ${bodyStripeClass(
+                            effectiveRequiredStaffByTime.length + 2
+                          )}`}
+                        >
                           <textarea
-                            className="h-20 w-56 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                            className="mx-auto h-20 w-56 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
                             value={noteByDate[date] ?? ""}
                             onChange={(event) =>
                               setNoteByDate((prev) => ({
