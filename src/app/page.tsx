@@ -431,7 +431,7 @@ export default function HomePage() {
                     const classRows = SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => (
                       <tr key={`${date}-${classGroup.key}`} className={classIndex === 1 ? "bg-orange-50/50" : undefined}>
                         {classIndex === 0 ? (
-                          <td rowSpan={DATE_GROUP_ROW_COUNT} className={`px-3 py-2 align-top ${dateTextClass}`}>
+                          <td rowSpan={DATE_GROUP_ROW_COUNT} className={`px-3 py-2 text-center align-middle ${dateTextClass}`}>
                             {dateText}
                           </td>
                         ) : null}
