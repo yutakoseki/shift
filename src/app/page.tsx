@@ -155,6 +155,7 @@ export default function HomePage() {
   const [addColumnShiftType, setAddColumnShiftType] = useState("");
   const [deleteTargetColumnId, setDeleteTargetColumnId] = useState<string | null>(null);
   const [showShortageModal, setShowShortageModal] = useState(false);
+  const [viewMode, setViewMode] = useState<"class" | "staff">("class");
 
   const dates = useMemo(() => monthToDates(month), [month]);
   const shiftPatterns = useMemo(() => masterData?.shiftPatterns ?? [], [masterData]);
@@ -348,6 +349,32 @@ export default function HomePage() {
       countByDate.set(date, countByName);
     }
     return countByDate;
+  }, [cells, dates, shiftColumns]);
+
+  const shiftCodesByDateAndStaff = useMemo(() => {
+    const result = new Map<string, Map<string, string>>();
+    for (const date of dates) {
+      const codesByName = new Map<string, string[]>();
+      for (const classGroup of SHIFT_CLASS_GROUPS) {
+        for (const column of shiftColumns) {
+          const staffName = (cells[keyOf(date, column.id, classGroup.key)] ?? "").trim();
+          if (!staffName) {
+            continue;
+          }
+          if (!codesByName.has(staffName)) {
+            codesByName.set(staffName, []);
+          }
+          codesByName.get(staffName)?.push(column.shiftType);
+        }
+      }
+
+      const textByName = new Map<string, string>();
+      codesByName.forEach((codes, name) => {
+        textByName.set(name, Array.from(new Set(codes)).join(" / "));
+      });
+      result.set(date, textByName);
+    }
+    return result;
   }, [cells, dates, shiftColumns]);
 
   const loadMonth = useCallback(async () => {
@@ -703,58 +730,216 @@ export default function HomePage() {
           <p className="text-sm text-orange-700">
             必要先生人数は、各時刻について曜日別に算出した人数の最大値を表示しています。
           </p>
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
+                viewMode === "class" ? "bg-orange-500 text-white" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
+              }`}
+              onClick={() => setViewMode("class")}
+            >
+              クラス別表示
+            </button>
+            <button
+              className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
+                viewMode === "staff" ? "bg-orange-500 text-white" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
+              }`}
+              onClick={() => setViewMode("staff")}
+            >
+              先生別表示
+            </button>
+          </div>
           <div className="mt-3 overflow-auto">
-            <div className="flex min-w-max items-start">
-              <table className="text-sm">
-                <thead>
+            {viewMode === "class" ? (
+              <div className="flex min-w-max items-start">
+                <table className="text-sm">
+                  <thead>
+                    <tr>
+                      <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">日付</th>
+                      <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">クラス区分</th>
+                      {shiftColumns.map((column, columnIndex) => (
+                        <th
+                          key={column.id}
+                          className={`relative cursor-pointer px-3 py-2 text-center font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
+                          onMouseDown={(event) => {
+                            const target = event.target;
+                            if (target instanceof Element && target.closest('[data-header-menu="true"]')) {
+                              return;
+                            }
+                            event.preventDefault();
+                            setHeaderMenuColumnId((prev) => (prev === column.id ? null : column.id));
+                          }}
+                          data-header-trigger="true"
+                        >
+                          <div className="text-center">{column.shiftType}</div>
+                          {shiftPatternByCode.get(column.shiftType) ? (
+                            <div className="text-center text-xs font-normal text-orange-700">
+                              {shiftPatternByCode.get(column.shiftType)?.startTime} - {shiftPatternByCode.get(column.shiftType)?.endTime}
+                            </div>
+                          ) : null}
+                          {headerMenuColumnId === column.id ? (
+                            <div
+                              className="absolute left-full top-1/2 z-20 ml-2 -translate-y-1/2 rounded-md border border-orange-200 bg-white p-1 shadow-md"
+                              data-header-menu="true"
+                            >
+                              <button
+                                className="block w-full whitespace-nowrap rounded px-2 py-1 text-left text-xs text-orange-800 hover:bg-orange-100"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openAddColumnModal(column.id);
+                                }}
+                              >
+                                右に列を追加
+                              </button>
+                              <button
+                                className="mt-1 block w-full whitespace-nowrap rounded px-2 py-1 text-left text-xs text-red-700 hover:bg-red-100"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleDeleteShiftColumn(column.id);
+                                }}
+                              >
+                                列を削除
+                              </button>
+                            </div>
+                          ) : null}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dates.map((date) => {
+                      const weekday = weekdayFromDateText(date);
+                      const dateText = `${dayLabelFromDateText(date)} (${WEEKDAY_LABELS[weekday]})`;
+                      const dateTextClass = weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
+
+                      const classRows = SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => (
+                        <tr
+                          key={`${date}-${classGroup.key}`}
+                          className={classIndex === 0 ? "border-t-2 border-orange-200" : undefined}
+                        >
+                          {classIndex === 0 ? (
+                            <td rowSpan={DATE_GROUP_ROW_COUNT} className={`px-3 py-2 text-center align-middle ${dateTextClass}`}>
+                              {dateText}
+                            </td>
+                          ) : null}
+                          <td className="whitespace-nowrap px-3 py-2 text-orange-800">{classGroup.label}</td>
+                          {shiftColumns.map((column, columnIndex) => {
+                            const key = keyOf(date, column.id, classGroup.key);
+                            const currentValue = cells[key] ?? "";
+                            const warnings = ruleWarnings(date, column.shiftType, currentValue);
+                            const options = selectableStaffNames(date, column.shiftType, currentValue);
+                            return (
+                              <td key={`${classGroup.key}-${column.id}`} className={`p-1 ${bodyStripeClass(columnIndex)}`}>
+                                <select
+                                  className="w-full rounded bg-white px-2 py-1 outline-none focus:bg-orange-50"
+                                  value={currentValue}
+                                  onChange={(event) =>
+                                    setCells((prev) => ({
+                                      ...prev,
+                                      [key]: event.target.value
+                                    }))
+                                  }
+                                >
+                                  <option value="" />
+                                  {options.map((name) => (
+                                    <option key={name} value={name}>
+                                      {name}
+                                    </option>
+                                  ))}
+                                </select>
+                                {warnings.length > 0 ? <p className="mt-1 text-xs text-red-600">{warnings.join(" / ")}</p> : null}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ));
+
+                      const totalRow = (
+                        <tr key={`${date}-total`} className="border-b-2 border-orange-200 bg-orange-100/40">
+                          <td className="whitespace-nowrap px-3 py-2 font-semibold text-orange-900">合計（対人数）</td>
+                          {shiftColumns.map((column, columnIndex) => (
+                            <td
+                              key={`total-${date}-${column.id}`}
+                              className={`px-3 py-2 text-center text-xs text-orange-500 ${summaryStripeClass(columnIndex)}`}
+                            />
+                          ))}
+                        </tr>
+                      );
+
+                      return [...classRows, totalRow];
+                    })}
+                  </tbody>
+                </table>
+
+                <table className="border-l border-orange-200 text-sm">
+                  <tbody>
+                    <tr className="h-[26px] bg-orange-100/70">
+                      {requiredStaffByTime.map((item, columnIndex) => (
+                        <th
+                          key={item.time}
+                          className={`h-[26px] whitespace-nowrap px-3 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
+                        >
+                          {item.time}
+                        </th>
+                      ))}
+                    </tr>
+                    <tr className="h-[26px] odd:bg-orange-50/50">
+                      {requiredStaffByTime.map((item, columnIndex) => (
+                        <td
+                          key={`required-${item.time}`}
+                          className={`h-[26px] whitespace-nowrap px-3 py-0 align-middle font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
+                        >
+                          {item.requiredCount}人
+                        </td>
+                      ))}
+                    </tr>
+                    {dates.flatMap((date) =>
+                      [
+                        ...SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => {
+                          const counts = assignedStaffCountByDateAndClass.get(`${date}|${classGroup.key}`) ?? REQUIRED_STAFF_TIMES.map(() => 0);
+                          return (
+                            <tr
+                              key={`assigned-${date}-${classGroup.key}`}
+                              className={classIndex === 0 ? "border-t-2 border-orange-200" : undefined}
+                            >
+                              {counts.map((count, columnIndex) => (
+                                <td
+                                  key={`${date}-${classGroup.key}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
+                                  className={`whitespace-nowrap px-3 py-2 text-orange-900 ${bodyStripeClass(columnIndex)}`}
+                                >
+                                  {count}人
+                                </td>
+                              ))}
+                            </tr>
+                          );
+                        }),
+                        <tr key={`assigned-${date}-total`} className="border-b-2 border-orange-200 bg-orange-100/40">
+                          {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
+                            <td
+                              key={`${date}-total-${REQUIRED_STAFF_TIMES[columnIndex]}`}
+                              className={`whitespace-nowrap px-3 py-2 font-semibold ${
+                                count < (requiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
+                              } ${summaryStripeClass(columnIndex)}`}
+                            >
+                              {count}人
+                            </td>
+                          ))}
+                        </tr>
+                      ]
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <table className="min-w-full text-sm">
+                <thead className="bg-orange-100/70">
                   <tr>
-                    <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">日付</th>
-                    <th className="bg-orange-100/70 px-3 py-2 text-left font-semibold text-orange-900">クラス区分</th>
-                    {shiftColumns.map((column, columnIndex) => (
+                    <th className="px-3 py-2 text-left font-semibold text-orange-900">日付</th>
+                    {allStaffNames.map((name, index) => (
                       <th
-                        key={column.id}
-                        className={`relative cursor-pointer px-3 py-2 text-center font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
-                        onMouseDown={(event) => {
-                          const target = event.target;
-                          if (target instanceof Element && target.closest('[data-header-menu="true"]')) {
-                            return;
-                          }
-                          event.preventDefault();
-                          setHeaderMenuColumnId((prev) => (prev === column.id ? null : column.id));
-                        }}
-                        data-header-trigger="true"
+                        key={`${name}-${index}`}
+                        className={`whitespace-nowrap px-3 py-2 text-center font-semibold text-orange-900 ${headerStripeClass(index)}`}
                       >
-                        <div className="text-center">{column.shiftType}</div>
-                        {shiftPatternByCode.get(column.shiftType) ? (
-                          <div className="text-center text-xs font-normal text-orange-700">
-                            {shiftPatternByCode.get(column.shiftType)?.startTime} - {shiftPatternByCode.get(column.shiftType)?.endTime}
-                          </div>
-                        ) : null}
-                        {headerMenuColumnId === column.id ? (
-                          <div
-                            className="absolute left-full top-1/2 z-20 ml-2 -translate-y-1/2 rounded-md border border-orange-200 bg-white p-1 shadow-md"
-                            data-header-menu="true"
-                          >
-                            <button
-                              className="block w-full whitespace-nowrap rounded px-2 py-1 text-left text-xs text-orange-800 hover:bg-orange-100"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                openAddColumnModal(column.id);
-                              }}
-                            >
-                              右に列を追加
-                            </button>
-                            <button
-                              className="mt-1 block w-full whitespace-nowrap rounded px-2 py-1 text-left text-xs text-red-700 hover:bg-red-100"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                handleDeleteShiftColumn(column.id);
-                              }}
-                            >
-                              列を削除
-                            </button>
-                          </div>
-                        ) : null}
+                        {name}
                       </th>
                     ))}
                   </tr>
@@ -764,125 +949,24 @@ export default function HomePage() {
                     const weekday = weekdayFromDateText(date);
                     const dateText = `${dayLabelFromDateText(date)} (${WEEKDAY_LABELS[weekday]})`;
                     const dateTextClass = weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
-
-                    const classRows = SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => (
-                      <tr
-                        key={`${date}-${classGroup.key}`}
-                        className={classIndex === 0 ? "border-t-2 border-orange-200" : undefined}
-                      >
-                        {classIndex === 0 ? (
-                          <td rowSpan={DATE_GROUP_ROW_COUNT} className={`px-3 py-2 text-center align-middle ${dateTextClass}`}>
-                            {dateText}
-                          </td>
-                        ) : null}
-                        <td className="whitespace-nowrap px-3 py-2 text-orange-800">{classGroup.label}</td>
-                        {shiftColumns.map((column, columnIndex) => {
-                          const key = keyOf(date, column.id, classGroup.key);
-                          const currentValue = cells[key] ?? "";
-                          const warnings = ruleWarnings(date, column.shiftType, currentValue);
-                          const options = selectableStaffNames(date, column.shiftType, currentValue);
-                          return (
-                            <td key={`${classGroup.key}-${column.id}`} className={`p-1 ${bodyStripeClass(columnIndex)}`}>
-                              <select
-                                className="w-full rounded bg-white px-2 py-1 outline-none focus:bg-orange-50"
-                                value={currentValue}
-                                onChange={(event) =>
-                                  setCells((prev) => ({
-                                    ...prev,
-                                    [key]: event.target.value
-                                  }))
-                                }
-                              >
-                                <option value="" />
-                                {options.map((name) => (
-                                  <option key={name} value={name}>
-                                    {name}
-                                  </option>
-                                ))}
-                              </select>
-                              {warnings.length > 0 ? <p className="mt-1 text-xs text-red-600">{warnings.join(" / ")}</p> : null}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ));
-
-                    const totalRow = (
-                      <tr key={`${date}-total`} className="border-b-2 border-orange-200 bg-orange-100/40">
-                        <td className="whitespace-nowrap px-3 py-2 font-semibold text-orange-900">合計（対人数）</td>
-                        {shiftColumns.map((column, columnIndex) => (
+                    const rowMap = shiftCodesByDateAndStaff.get(date) ?? new Map<string, string>();
+                    return (
+                      <tr key={`staff-view-${date}`} className="border-t border-orange-100 odd:bg-orange-50/30">
+                        <td className={`whitespace-nowrap px-3 py-2 text-center font-semibold ${dateTextClass}`}>{dateText}</td>
+                        {allStaffNames.map((name, index) => (
                           <td
-                            key={`total-${date}-${column.id}`}
-                            className={`px-3 py-2 text-center text-xs text-orange-500 ${summaryStripeClass(columnIndex)}`}
-                          />
+                            key={`staff-view-${date}-${name}-${index}`}
+                            className={`whitespace-nowrap px-3 py-2 text-center text-orange-900 ${bodyStripeClass(index)}`}
+                          >
+                            {rowMap.get(name) ?? ""}
+                          </td>
                         ))}
                       </tr>
                     );
-
-                    return [...classRows, totalRow];
                   })}
                 </tbody>
               </table>
-
-              <table className="border-l border-orange-200 text-sm">
-                <tbody>
-                  <tr className="h-[26px] bg-orange-100/70">
-                    {requiredStaffByTime.map((item, columnIndex) => (
-                      <th
-                        key={item.time}
-                        className={`h-[26px] whitespace-nowrap px-3 py-0 text-left align-middle font-semibold text-orange-900 ${headerStripeClass(columnIndex)}`}
-                      >
-                        {item.time}
-                      </th>
-                    ))}
-                  </tr>
-                  <tr className="h-[26px] odd:bg-orange-50/50">
-                    {requiredStaffByTime.map((item, columnIndex) => (
-                      <td
-                        key={`required-${item.time}`}
-                        className={`h-[26px] whitespace-nowrap px-3 py-0 align-middle font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
-                      >
-                        {item.requiredCount}人
-                      </td>
-                    ))}
-                  </tr>
-                  {dates.flatMap((date) =>
-                    [
-                      ...SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => {
-                        const counts = assignedStaffCountByDateAndClass.get(`${date}|${classGroup.key}`) ?? REQUIRED_STAFF_TIMES.map(() => 0);
-                        return (
-                          <tr
-                            key={`assigned-${date}-${classGroup.key}`}
-                            className={classIndex === 0 ? "border-t-2 border-orange-200" : undefined}
-                          >
-                            {counts.map((count, columnIndex) => (
-                              <td
-                                key={`${date}-${classGroup.key}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
-                                className={`whitespace-nowrap px-3 py-2 text-orange-900 ${bodyStripeClass(columnIndex)}`}
-                              >
-                                {count}人
-                              </td>
-                            ))}
-                          </tr>
-                        );
-                      }),
-                      <tr key={`assigned-${date}-total`} className="border-b-2 border-orange-200 bg-orange-100/40">
-                        {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
-                          <td
-                            key={`${date}-total-${REQUIRED_STAFF_TIMES[columnIndex]}`}
-                            className={`whitespace-nowrap px-3 py-2 font-semibold ${
-                              count < (requiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
-                            } ${summaryStripeClass(columnIndex)}`}
-                          >
-                            {count}人
-                          </td>
-                        ))}
-                      </tr>
-                    ]
-                  )}
-                </tbody>
-              </table>
-            </div>
+            )}
           </div>
         </section>
 
