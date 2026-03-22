@@ -1,7 +1,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createDefaultMasterData, MasterData, normalizeMasterData } from "@/types/master-data";
-import { RequiredStaffByTime, ShiftColumn, ShiftEntry } from "@/types/shift";
+import { RequiredStaffByTime, ShiftColumn, ShiftDateMemo, ShiftEntry } from "@/types/shift";
 import { UserProfile, UserRole } from "@/types/user";
 import { logInfo } from "@/lib/server-log";
 
@@ -10,6 +10,7 @@ type ShiftMonthItem = {
   entries: ShiftEntry[];
   columns?: ShiftColumn[];
   requiredByTime?: RequiredStaffByTime[];
+  dateMemos?: ShiftDateMemo[];
   updatedAt: string;
 };
 
@@ -17,6 +18,7 @@ export type ShiftMonthData = {
   entries: ShiftEntry[];
   columns?: ShiftColumn[];
   requiredByTime?: RequiredStaffByTime[];
+  dateMemos?: ShiftDateMemo[];
 };
 
 type MasterDataItem = {
@@ -87,7 +89,8 @@ export async function getShiftMonth(month: string): Promise<ShiftMonthData> {
   return {
     entries: item?.entries ?? [],
     columns: item?.columns,
-    requiredByTime: item?.requiredByTime
+    requiredByTime: item?.requiredByTime,
+    dateMemos: item?.dateMemos
   };
 }
 
@@ -104,6 +107,7 @@ export async function putShiftMonth(month: string, data: ShiftMonthData): Promis
         entries: data.entries,
         columns: data.columns,
         requiredByTime: data.requiredByTime,
+        dateMemos: data.dateMemos,
         updatedAt: new Date().toISOString()
       } satisfies ShiftMonthItem
     })

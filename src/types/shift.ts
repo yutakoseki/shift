@@ -26,9 +26,16 @@ export type RequiredStaffByTime = {
   requiredCount: number;
 };
 
+export type ShiftDateMemo = {
+  date: string;
+  event: string;
+  note: string;
+};
+
 export type ShiftMonthResponse = {
   month: string;
   entries: ShiftEntry[];
   columns?: ShiftColumn[];
   requiredByTime?: RequiredStaffByTime[];
+  dateMemos?: ShiftDateMemo[];
 };

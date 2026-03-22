@@ -159,6 +159,8 @@ export default function HomePage() {
   const [requiredOverrideByTime, setRequiredOverrideByTime] = useState<Record<string, number>>({});
   const [showResetRequiredModal, setShowResetRequiredModal] = useState(false);
   const [viewMode, setViewMode] = useState<"class" | "staff">("class");
+  const [eventByDate, setEventByDate] = useState<Record<string, string>>({});
+  const [noteByDate, setNoteByDate] = useState<Record<string, string>>({});
   const topScrollRef = useRef<HTMLDivElement | null>(null);
   const bottomScrollRef = useRef<HTMLDivElement | null>(null);
   const [topScrollWidth, setTopScrollWidth] = useState(0);
@@ -368,6 +370,18 @@ export default function HomePage() {
     return countByDate;
   }, [cells, dates, shiftColumns]);
 
+  const offStaffTextByDate = useMemo(() => {
+    const byDate = new Map<string, string>();
+    for (const date of dates) {
+      const names = Object.keys(offByDateAndStaff)
+        .filter((recordKey) => offByDateAndStaff[recordKey] && recordKey.startsWith(`${date}|`))
+        .map((recordKey) => recordKey.split("|")[1])
+        .filter((name) => Boolean(name));
+      byDate.set(date, Array.from(new Set(names)).join("、"));
+    }
+    return byDate;
+  }, [dates, offByDateAndStaff]);
+
   const selectableShiftTypesForStaffView = useMemo(
     () => Array.from(new Set(shiftColumns.map((column) => column.shiftType))),
     [shiftColumns]
@@ -491,6 +505,14 @@ export default function HomePage() {
         }
       });
       setRequiredOverrideByTime(nextRequiredOverrideByTime);
+      const nextEventByDate: Record<string, string> = {};
+      const nextNoteByDate: Record<string, string> = {};
+      (data.dateMemos ?? []).forEach((item) => {
+        nextEventByDate[item.date] = item.event;
+        nextNoteByDate[item.date] = item.note;
+      });
+      setEventByDate(nextEventByDate);
+      setNoteByDate(nextNoteByDate);
     } finally {
       setLoadingData(false);
     }
@@ -541,6 +563,16 @@ export default function HomePage() {
     }));
   }, [effectiveRequiredStaffByTime]);
 
+  const buildDateMemosPayload = useCallback(() => {
+    return dates
+      .map((date) => ({
+        date,
+        event: (eventByDate[date] ?? "").trim(),
+        note: (noteByDate[date] ?? "").trim()
+      }))
+      .filter((item) => item.event.length > 0 || item.note.length > 0);
+  }, [dates, eventByDate, noteByDate]);
+
   const persistShiftColumns = useCallback(
     async (columns: ShiftColumn[]): Promise<void> => {
       const response = await fetch("/api/shifts", {
@@ -550,14 +582,15 @@ export default function HomePage() {
           month,
           entries: buildEntriesFromColumns(columns),
           columns,
-          requiredByTime: buildRequiredByTimePayload()
+          requiredByTime: buildRequiredByTimePayload(),
+          dateMemos: buildDateMemosPayload()
         })
       });
       if (!response.ok) {
         throw new Error("列構成の保存に失敗しました");
       }
     },
-    [buildEntriesFromColumns, buildRequiredByTimePayload, month]
+    [buildDateMemosPayload, buildEntriesFromColumns, buildRequiredByTimePayload, month]
   );
 
   useEffect(() => {
@@ -574,7 +607,8 @@ export default function HomePage() {
           month,
           entries: buildEntriesFromColumns(shiftColumns),
           columns: shiftColumns,
-          requiredByTime: buildRequiredByTimePayload()
+          requiredByTime: buildRequiredByTimePayload(),
+          dateMemos: buildDateMemosPayload()
         })
       });
       if (!response.ok) {
@@ -1088,6 +1122,15 @@ export default function HomePage() {
                           {item.time}
                         </th>
                       ))}
+                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
+                        休み
+                      </th>
+                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
+                        イベント
+                      </th>
+                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
+                        備考
+                      </th>
                     </tr>
                     <tr className="h-[26px] odd:bg-orange-50/50">
                       {effectiveRequiredStaffByTime.map((item, columnIndex) => (
@@ -1125,6 +1168,39 @@ export default function HomePage() {
                                   {count}人
                                 </td>
                               ))}
+                              {classIndex === 0 ? (
+                                <td rowSpan={DATE_GROUP_ROW_COUNT} className="whitespace-nowrap px-2 py-1.5 align-middle text-orange-900">
+                                  {offStaffTextByDate.get(date) ?? ""}
+                                </td>
+                              ) : null}
+                              {classIndex === 0 ? (
+                                <td rowSpan={DATE_GROUP_ROW_COUNT} className="px-2 py-1.5 align-middle">
+                                  <textarea
+                                    className="h-24 w-44 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                                    value={eventByDate[date] ?? ""}
+                                    onChange={(event) =>
+                                      setEventByDate((prev) => ({
+                                        ...prev,
+                                        [date]: event.target.value
+                                      }))
+                                    }
+                                  />
+                                </td>
+                              ) : null}
+                              {classIndex === 0 ? (
+                                <td rowSpan={DATE_GROUP_ROW_COUNT} className="px-2 py-1.5 align-middle">
+                                  <textarea
+                                    className="h-24 w-56 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                                    value={noteByDate[date] ?? ""}
+                                    onChange={(event) =>
+                                      setNoteByDate((prev) => ({
+                                        ...prev,
+                                        [date]: event.target.value
+                                      }))
+                                    }
+                                  />
+                                </td>
+                              ) : null}
                             </tr>
                           );
                         }),
@@ -1219,6 +1295,15 @@ export default function HomePage() {
                           {item.time}
                         </th>
                       ))}
+                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
+                        休み
+                      </th>
+                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
+                        イベント
+                      </th>
+                      <th rowSpan={2} className="whitespace-nowrap px-2 py-0 text-left align-middle font-semibold text-orange-900">
+                        備考
+                      </th>
                     </tr>
                     <tr className="h-[26px]">
                       {effectiveRequiredStaffByTime.map((item, columnIndex) => (
@@ -1254,6 +1339,31 @@ export default function HomePage() {
                             {count}人
                           </td>
                         ))}
+                        <td className="whitespace-nowrap px-2 py-1.5 text-orange-900">{offStaffTextByDate.get(date) ?? ""}</td>
+                        <td className="px-2 py-1.5">
+                          <textarea
+                            className="h-20 w-44 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                            value={eventByDate[date] ?? ""}
+                            onChange={(event) =>
+                              setEventByDate((prev) => ({
+                                ...prev,
+                                [date]: event.target.value
+                              }))
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <textarea
+                            className="h-20 w-56 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                            value={noteByDate[date] ?? ""}
+                            onChange={(event) =>
+                              setNoteByDate((prev) => ({
+                                ...prev,
+                                [date]: event.target.value
+                              }))
+                            }
+                          />
+                        </td>
                       </tr>
                     ))}
                   </tbody>
