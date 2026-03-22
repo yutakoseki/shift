@@ -157,6 +157,7 @@ export default function HomePage() {
   const [deleteTargetColumnId, setDeleteTargetColumnId] = useState<string | null>(null);
   const [showShortageModal, setShowShortageModal] = useState(false);
   const [requiredOverrideByTime, setRequiredOverrideByTime] = useState<Record<string, number>>({});
+  const [showResetRequiredModal, setShowResetRequiredModal] = useState(false);
   const [viewMode, setViewMode] = useState<"class" | "staff">("class");
 
   const dates = useMemo(() => monthToDates(month), [month]);
@@ -730,6 +731,10 @@ export default function HomePage() {
     });
   }
 
+  function resetRequiredStaffToCalculated(): void {
+    setRequiredOverrideByTime({});
+  }
+
   function performDeleteShiftColumn(columnId: string): void {
     if (shiftColumns.length <= 1) {
       alert("最低1つはシフトヘッダーを残してください。");
@@ -861,22 +866,30 @@ export default function HomePage() {
           <p className="text-sm text-orange-700">
             必要先生人数は、各時刻について曜日別に算出した人数の最大値を表示しています。
           </p>
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <button
+                className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
+                  viewMode === "class" ? "bg-orange-500 text-white" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
+                }`}
+                onClick={() => setViewMode("class")}
+              >
+                クラス別表示
+              </button>
+              <button
+                className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
+                  viewMode === "staff" ? "bg-orange-500 text-white" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
+                }`}
+                onClick={() => setViewMode("staff")}
+              >
+                先生別表示
+              </button>
+            </div>
             <button
-              className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
-                viewMode === "class" ? "bg-orange-500 text-white" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
-              }`}
-              onClick={() => setViewMode("class")}
+              className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200"
+              onClick={() => setShowResetRequiredModal(true)}
             >
-              クラス別表示
-            </button>
-            <button
-              className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
-                viewMode === "staff" ? "bg-orange-500 text-white" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
-              }`}
-              onClick={() => setViewMode("staff")}
-            >
-              先生別表示
+              必要人数リセット
             </button>
           </div>
           <div className="mt-3 overflow-auto">
@@ -1297,6 +1310,32 @@ export default function HomePage() {
                   }}
                 >
                   このまま保存
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showResetRequiredModal ? (
+          <div className="fixed inset-0 z-50 m-0 flex items-center justify-center bg-black/40">
+            <div className="mx-4 w-full max-w-sm rounded-lg bg-white p-4 shadow-lg">
+              <h3 className="text-base font-semibold text-orange-900">必要人数リセットの確認</h3>
+              <p className="mt-1 text-sm text-orange-700">手動で修正した必要人数を自動計算値に戻します。よろしいですか？</p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  className="rounded bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200"
+                  onClick={() => setShowResetRequiredModal(false)}
+                >
+                  キャンセル
+                </button>
+                <button
+                  className="rounded bg-red-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-red-600"
+                  onClick={() => {
+                    setShowResetRequiredModal(false);
+                    resetRequiredStaffToCalculated();
+                  }}
+                >
+                  リセットする
                 </button>
               </div>
             </div>
