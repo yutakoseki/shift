@@ -24,6 +24,13 @@ const REQUIRED_STAFF_TIMES = [
 const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"] as const;
 const DATE_GROUP_ROW_COUNT = SHIFT_CLASS_GROUPS.length + 1;
 
+type ShortageItem = {
+  date: string;
+  time: string;
+  required: number;
+  assigned: number;
+};
+
 function createShiftColumnId(shiftType: string): string {
   return `${shiftType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -147,6 +154,7 @@ export default function HomePage() {
   const [addColumnBaseColumnId, setAddColumnBaseColumnId] = useState<string | null>(null);
   const [addColumnShiftType, setAddColumnShiftType] = useState("");
   const [deleteTargetColumnId, setDeleteTargetColumnId] = useState<string | null>(null);
+  const [showShortageModal, setShowShortageModal] = useState(false);
 
   const dates = useMemo(() => monthToDates(month), [month]);
   const shiftPatterns = useMemo(() => masterData?.shiftPatterns ?? [], [masterData]);
@@ -179,6 +187,13 @@ export default function HomePage() {
       return new Map<string, PartTimeStaff>();
     }
     return new Map(masterData.partTimeStaff.map((staff) => [staff.name.trim(), staff]));
+  }, [masterData]);
+
+  const fullTimeByName = useMemo(() => {
+    if (!masterData) {
+      return new Map<string, MasterData["fullTimeStaff"][number]>();
+    }
+    return new Map(masterData.fullTimeStaff.map((staff) => [staff.name.trim(), staff]));
   }, [masterData]);
 
   const shiftPatternByCode = useMemo(() => {
@@ -298,6 +313,43 @@ export default function HomePage() {
     return countByDate;
   }, [cells, dates, shiftColumns, shiftPatternByCode]);
 
+  const shortageItems = useMemo(() => {
+    const items: ShortageItem[] = [];
+    for (const date of dates) {
+      const assignedCounts = assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
+      requiredStaffByTime.forEach((required, index) => {
+        const assigned = assignedCounts[index] ?? 0;
+        if (assigned < required.requiredCount) {
+          items.push({
+            date,
+            time: required.time,
+            required: required.requiredCount,
+            assigned
+          });
+        }
+      });
+    }
+    return items;
+  }, [assignedTotalStaffCountByDate, dates, requiredStaffByTime]);
+
+  const assignedStaffCountByDateAndName = useMemo(() => {
+    const countByDate = new Map<string, Map<string, number>>();
+    for (const date of dates) {
+      const countByName = new Map<string, number>();
+      for (const classGroup of SHIFT_CLASS_GROUPS) {
+        for (const column of shiftColumns) {
+          const staffName = (cells[keyOf(date, column.id, classGroup.key)] ?? "").trim();
+          if (!staffName) {
+            continue;
+          }
+          countByName.set(staffName, (countByName.get(staffName) ?? 0) + 1);
+        }
+      }
+      countByDate.set(date, countByName);
+    }
+    return countByDate;
+  }, [cells, dates, shiftColumns]);
+
   const loadMonth = useCallback(async () => {
     setLoadingData(true);
     try {
@@ -402,7 +454,7 @@ export default function HomePage() {
     void loadMonth();
   }, [loadMonth]);
 
-  async function saveMonth(): Promise<void> {
+  async function performSaveMonth(): Promise<void> {
     setSaving(true);
     try {
       const response = await fetch("/api/shifts", {
@@ -419,6 +471,14 @@ export default function HomePage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function saveMonth(): Promise<void> {
+    if (shortageItems.length > 0) {
+      setShowShortageModal(true);
+      return;
+    }
+    await performSaveMonth();
   }
 
   useEffect(() => {
@@ -463,6 +523,53 @@ export default function HomePage() {
       }
     }
     return warnings;
+  }
+
+  function canWorkOnShift(date: string, shiftType: string, staffName: string): boolean {
+    const normalizedName = staffName.trim();
+    if (!normalizedName) {
+      return false;
+    }
+
+    const fullTime = fullTimeByName.get(normalizedName);
+    if (fullTime) {
+      return fullTime.possibleShiftPatternCodes.length === 0 || fullTime.possibleShiftPatternCodes.includes(shiftType);
+    }
+
+    const partTime = partTimeByName.get(normalizedName);
+    if (!partTime) {
+      return false;
+    }
+
+    const weekday = new Date(date).getDay();
+    if (!partTime.availableWeekdays.includes(weekday)) {
+      return false;
+    }
+    if (partTime.possibleShiftPatternCodes.length > 0 && !partTime.possibleShiftPatternCodes.includes(shiftType)) {
+      return false;
+    }
+    const pattern = shiftPatternByCode.get(shiftType);
+    if (!pattern) {
+      return true;
+    }
+    const patternStart = timeToMinutes(pattern.startTime);
+    const patternEnd = timeToMinutes(pattern.endTime);
+    const availableStart = timeToMinutes(partTime.availableStartTime);
+    const availableEnd = timeToMinutes(partTime.availableEndTime);
+    return patternStart >= availableStart && patternEnd <= availableEnd;
+  }
+
+  function selectableStaffNames(date: string, shiftType: string, currentValue: string): string[] {
+    const countByName = assignedStaffCountByDateAndName.get(date) ?? new Map<string, number>();
+    const normalizedCurrentValue = currentValue.trim();
+    return allStaffNames.filter((name) => {
+      if (!canWorkOnShift(date, shiftType, name)) {
+        return false;
+      }
+      const currentCount = countByName.get(name) ?? 0;
+      const usedByOtherCell = name === normalizedCurrentValue ? currentCount - 1 : currentCount;
+      return usedByOtherCell <= 0;
+    });
   }
 
   function performDeleteShiftColumn(columnId: string): void {
@@ -671,12 +778,14 @@ export default function HomePage() {
                         <td className="whitespace-nowrap px-3 py-2 text-orange-800">{classGroup.label}</td>
                         {shiftColumns.map((column, columnIndex) => {
                           const key = keyOf(date, column.id, classGroup.key);
-                          const warnings = ruleWarnings(date, column.shiftType, cells[key] ?? "");
+                          const currentValue = cells[key] ?? "";
+                          const warnings = ruleWarnings(date, column.shiftType, currentValue);
+                          const options = selectableStaffNames(date, column.shiftType, currentValue);
                           return (
                             <td key={`${classGroup.key}-${column.id}`} className={`p-1 ${bodyStripeClass(columnIndex)}`}>
                               <select
                                 className="w-full rounded bg-white px-2 py-1 outline-none focus:bg-orange-50"
-                                value={cells[key] ?? ""}
+                                value={currentValue}
                                 onChange={(event) =>
                                   setCells((prev) => ({
                                     ...prev,
@@ -685,7 +794,7 @@ export default function HomePage() {
                                 }
                               >
                                 <option value="" />
-                                {allStaffNames.map((name) => (
+                                {options.map((name) => (
                                   <option key={name} value={name}>
                                     {name}
                                   </option>
@@ -761,7 +870,9 @@ export default function HomePage() {
                         {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
                           <td
                             key={`${date}-total-${REQUIRED_STAFF_TIMES[columnIndex]}`}
-                            className={`whitespace-nowrap px-3 py-2 font-semibold text-orange-900 ${summaryStripeClass(columnIndex)}`}
+                            className={`whitespace-nowrap px-3 py-2 font-semibold ${
+                              count < (requiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
+                            } ${summaryStripeClass(columnIndex)}`}
                           >
                             {count}人
                           </td>
@@ -834,6 +945,54 @@ export default function HomePage() {
                   onClick={() => confirmDeleteShiftColumn()}
                 >
                   削除する
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showShortageModal ? (
+          <div className="fixed inset-0 z-50 m-0 flex items-center justify-center bg-black/40">
+            <div className="mx-4 w-full max-w-2xl rounded-lg bg-white p-4 shadow-lg">
+              <h3 className="text-base font-semibold text-orange-900">必要人数に対して不足があります</h3>
+              <p className="mt-1 text-sm text-orange-700">不足を確認したうえで、このまま保存することもできます。</p>
+              <div className="mt-3 max-h-72 overflow-auto rounded border border-orange-100">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-orange-100/70">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-orange-900">日付</th>
+                      <th className="px-3 py-2 text-left text-orange-900">時刻</th>
+                      <th className="px-3 py-2 text-left text-orange-900">必要</th>
+                      <th className="px-3 py-2 text-left text-orange-900">配置</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shortageItems.map((item, index) => (
+                      <tr key={`${item.date}-${item.time}-${index}`} className="odd:bg-orange-50/40">
+                        <td className="px-3 py-2 text-orange-900">{item.date}</td>
+                        <td className="px-3 py-2 text-orange-900">{item.time}</td>
+                        <td className="px-3 py-2 font-semibold text-orange-900">{item.required}人</td>
+                        <td className="px-3 py-2 font-semibold text-red-600">{item.assigned}人</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  className="rounded bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200"
+                  onClick={() => setShowShortageModal(false)}
+                >
+                  キャンセル
+                </button>
+                <button
+                  className="rounded bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600"
+                  onClick={() => {
+                    setShowShortageModal(false);
+                    void performSaveMonth();
+                  }}
+                >
+                  このまま保存
                 </button>
               </div>
             </div>
