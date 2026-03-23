@@ -3,14 +3,28 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import FullscreenLoading from "@/components/fullscreen-loading";
-import { createId, fetchCurrentUserRole, fetchMasterData, saveMasterData, showToast } from "@/lib/master-data-client";
-import { createDefaultShiftRules, MasterData, ShiftRuleCreationStep, ShiftRules } from "@/types/master-data";
+import {
+  ageFromBirthDate,
+  createId,
+  fetchCurrentUserRole,
+  fetchMasterData,
+  saveMasterData,
+  showToast,
+} from "@/lib/master-data-client";
+import {
+  createDefaultShiftRules,
+  MasterData,
+  ShiftRuleCreationStep,
+  ShiftRules,
+} from "@/types/master-data";
 import { UserRole } from "@/types/user";
 
-function updateCreationOrder(steps: ShiftRuleCreationStep[]): ShiftRuleCreationStep[] {
+function updateCreationOrder(
+  steps: ShiftRuleCreationStep[],
+): ShiftRuleCreationStep[] {
   return steps.map((step, index) => ({
     ...step,
-    order: index + 1
+    order: index + 1,
   }));
 }
 
@@ -27,18 +41,114 @@ function normalizeShiftRulesForForm(input: ShiftRules | undefined): ShiftRules {
       combinations:
         input.saturdayRequirement?.combinations?.length > 0
           ? input.saturdayRequirement.combinations
-          : defaults.saturdayRequirement.combinations
+          : defaults.saturdayRequirement.combinations,
     },
     compensatoryHoliday: {
       ...defaults.compensatoryHoliday,
-      ...input.compensatoryHoliday
+      ...input.compensatoryHoliday,
     },
-    creationOrder: input.creationOrder?.length ? input.creationOrder : defaults.creationOrder,
+    creationOrder: input.creationOrder?.length
+      ? input.creationOrder
+      : defaults.creationOrder,
     autoGenerationPolicy: {
       ...defaults.autoGenerationPolicy,
-      ...input.autoGenerationPolicy
-    }
+      ...input.autoGenerationPolicy,
+    },
   };
+}
+
+function toMinutes(value: string): number {
+  const [h, m] = value.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function calculateSaturdayRequiredMax(masterData: MasterData): number {
+  const saturday = 6;
+  const ratioByAge = new Map<number, number>();
+  masterData.childRatios.forEach((item) => {
+    if (
+      Number.isFinite(item.age) &&
+      Number.isFinite(item.ratio) &&
+      item.ratio > 0
+    ) {
+      ratioByAge.set(Math.floor(item.age), Math.floor(item.ratio));
+    }
+  });
+
+  const saturdayAttendances = masterData.children
+    .map((child) => {
+      const attendance = child.attendanceByWeekday.find(
+        (slot) => slot.weekday === saturday,
+      );
+      if (!attendance || !attendance.enabled) {
+        return null;
+      }
+      return {
+        age: ageFromBirthDate(child.birthDate),
+        startMinutes: toMinutes(attendance.startTime),
+        endMinutes: toMinutes(attendance.endTime),
+      };
+    })
+    .filter(
+      (
+        item,
+      ): item is {
+        age: number | null;
+        startMinutes: number;
+        endMinutes: number;
+      } => item !== null,
+    )
+    .filter((item) => item.startMinutes < item.endMinutes);
+
+  if (saturdayAttendances.length === 0) {
+    return 0;
+  }
+
+  const start = Math.max(
+    0,
+    Math.floor(
+      Math.min(...saturdayAttendances.map((item) => item.startMinutes)) / 15,
+    ) * 15,
+  );
+  const end = Math.min(
+    24 * 60,
+    Math.ceil(
+      Math.max(...saturdayAttendances.map((item) => item.endMinutes)) / 15,
+    ) * 15,
+  );
+
+  let maxRequired = 0;
+  for (let slot = start; slot < end; slot += 15) {
+    const ageCount = new Map<number, number>();
+    let unknownAgeChildren = 0;
+
+    saturdayAttendances.forEach((item) => {
+      if (slot < item.startMinutes || slot >= item.endMinutes) {
+        return;
+      }
+      if (item.age === null) {
+        unknownAgeChildren += 1;
+        return;
+      }
+      ageCount.set(item.age, (ageCount.get(item.age) ?? 0) + 1);
+    });
+
+    let baseRequirement = 0;
+    ageCount.forEach((count, age) => {
+      const ratio = ratioByAge.get(age);
+      if (!ratio || ratio <= 0) {
+        unknownAgeChildren += count;
+        return;
+      }
+      baseRequirement += count / ratio;
+    });
+    const required = Math.ceil(baseRequirement + unknownAgeChildren);
+    if (required > maxRequired) {
+      maxRequired = required;
+    }
+  }
+
+  return maxRequired;
 }
 
 export default function ShiftRulesPage() {
@@ -57,17 +167,28 @@ export default function ShiftRulesPage() {
         const masterData = await fetchMasterData();
         setData({
           ...masterData,
-          shiftRules: normalizeShiftRulesForForm(masterData.shiftRules)
+          shiftRules: normalizeShiftRulesForForm(masterData.shiftRules),
         });
       } catch (requestError) {
-        setError(requestError instanceof Error ? requestError.message : "データ取得に失敗しました。");
+        setError(
+          requestError instanceof Error
+            ? requestError.message
+            : "データ取得に失敗しました。",
+        );
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  const rules = useMemo<ShiftRules | null>(() => data?.shiftRules ?? null, [data]);
+  const rules = useMemo<ShiftRules | null>(
+    () => data?.shiftRules ?? null,
+    [data],
+  );
+  const saturdayRequiredMaxByChildren = useMemo(
+    () => (data ? calculateSaturdayRequiredMax(data) : 0),
+    [data],
+  );
 
   function patchRules(patch: Partial<ShiftRules>): void {
     setData((prev) => {
@@ -78,18 +199,23 @@ export default function ShiftRulesPage() {
         ...prev,
         shiftRules: {
           ...prev.shiftRules,
-          ...patch
-        }
+          ...patch,
+        },
       };
     });
   }
 
-  function patchCreationStep(stepId: string, patch: Partial<ShiftRuleCreationStep>): void {
+  function patchCreationStep(
+    stepId: string,
+    patch: Partial<ShiftRuleCreationStep>,
+  ): void {
     if (!rules) {
       return;
     }
     patchRules({
-      creationOrder: rules.creationOrder.map((step) => (step.id === stepId ? { ...step, ...patch } : step))
+      creationOrder: rules.creationOrder.map((step) =>
+        step.id === stepId ? { ...step, ...patch } : step,
+      ),
     });
   }
 
@@ -97,9 +223,15 @@ export default function ShiftRulesPage() {
     if (!rules) {
       return;
     }
-    const currentIndex = rules.creationOrder.findIndex((step) => step.id === stepId);
+    const currentIndex = rules.creationOrder.findIndex(
+      (step) => step.id === stepId,
+    );
     const targetIndex = currentIndex + direction;
-    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= rules.creationOrder.length) {
+    if (
+      currentIndex < 0 ||
+      targetIndex < 0 ||
+      targetIndex >= rules.creationOrder.length
+    ) {
       return;
     }
     const nextSteps = [...rules.creationOrder];
@@ -117,8 +249,8 @@ export default function ShiftRulesPage() {
       {
         id: createId("step"),
         order: rules.creationOrder.length + 1,
-        title: ""
-      }
+        title: "",
+      },
     ]);
     patchRules({ creationOrder: nextSteps });
   }
@@ -135,13 +267,35 @@ export default function ShiftRulesPage() {
     if (!data || !rules || !editable) {
       return;
     }
-    const hasInvalidStep = rules.creationOrder.some((step) => step.title.trim().length === 0);
+    const hasInvalidStep = rules.creationOrder.some(
+      (step) => step.title.trim().length === 0,
+    );
     if (hasInvalidStep) {
       setError("入力順番の各項目名を入力してください。");
       return;
     }
     if (rules.saturdayRequirement.combinations.length === 0) {
       setError("土曜日の必要人数パターンを1つ以上登録してください。");
+      return;
+    }
+    const hasInvalidSaturdayCombination = rules.saturdayRequirement.combinations.some(
+      (pattern) =>
+        pattern.partTimeCount + pattern.fullTimeCount !==
+        rules.saturdayRequirement.minTotalStaff,
+    );
+    if (hasInvalidSaturdayCombination) {
+      setError(
+        `各パターンの合計人数（パート+常勤）を必要人数（${rules.saturdayRequirement.minTotalStaff}人）と同じにしてください。`,
+      );
+      return;
+    }
+    if (
+      rules.saturdayRequirement.enabled &&
+      rules.saturdayRequirement.minTotalStaff < saturdayRequiredMaxByChildren
+    ) {
+      setError(
+        `最低必要人数は土曜日の対人数MAX（${saturdayRequiredMaxByChildren}人）以上で入力してください。`,
+      );
       return;
     }
 
@@ -155,14 +309,18 @@ export default function ShiftRulesPage() {
           creationOrder: updateCreationOrder(
             rules.creationOrder.map((step) => ({
               ...step,
-              title: step.title.trim()
-            }))
-          )
-        }
+              title: step.title.trim(),
+            })),
+          ),
+        },
       });
       showToast("シフトルールを保存しました");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "保存に失敗しました。");
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "保存に失敗しました。",
+      );
     } finally {
       setSaving(false);
     }
@@ -173,7 +331,11 @@ export default function ShiftRulesPage() {
   }
 
   if (!rules) {
-    return <main className="p-6 text-red-600">シフトルールの読込に失敗しました。</main>;
+    return (
+      <main className="p-6 text-red-600">
+        シフトルールの読込に失敗しました。
+      </main>
+    );
   }
 
   return (
@@ -181,8 +343,12 @@ export default function ShiftRulesPage() {
       <section className="rounded-xl bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h1 className="text-2xl font-bold text-orange-900">シフトルール管理</h1>
-            <p className="mt-1 text-sm text-orange-700">シフト自動作成に使うルールと作成順序を管理します。</p>
+            <h1 className="text-2xl font-bold text-orange-900">
+              シフトルール管理
+            </h1>
+            <p className="mt-1 text-sm text-orange-700">
+              シフト自動作成に使うルールと作成順序を管理します。
+            </p>
           </div>
           <div className="flex items-center gap-2">
             {editable ? (
@@ -207,12 +373,18 @@ export default function ShiftRulesPage() {
             閲覧のみ可能です。編集・保存は管理者のみ実行できます。
           </p>
         ) : null}
-        {error ? <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p> : null}
+        {error ? (
+          <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">
+            {error}
+          </p>
+        ) : null}
       </section>
 
       <section className="rounded-xl bg-white p-4 shadow-sm">
-        <h2 className="text-lg font-semibold text-orange-900">土曜日の必要人数ルール</h2>
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <h2 className="text-lg font-semibold text-orange-900">
+          土曜日の必要人数ルール
+        </h2>
+        <div className="mt-3 flex flex-wrap items-center gap-4">
           <label className="flex items-center gap-2 text-sm text-orange-800">
             <input
               className="orange-checkbox"
@@ -223,18 +395,21 @@ export default function ShiftRulesPage() {
                 patchRules({
                   saturdayRequirement: {
                     ...rules.saturdayRequirement,
-                    enabled: event.target.checked
-                  }
+                    enabled: event.target.checked,
+                  },
                 })
               }
             />
             土曜日の必要人数ルールを有効にする
           </label>
+          <p className="text-sm text-orange-700">
+            最低必要人数: {saturdayRequiredMaxByChildren}人
+          </p>
           <label className="text-sm text-orange-800">
-            最低必要人数:
+            必要人数:
             <input
               type="number"
-              min={1}
+              min={Math.max(1, saturdayRequiredMaxByChildren)}
               className="ml-2 w-24 rounded bg-orange-50 px-2 py-1 text-right text-orange-900"
               value={rules.saturdayRequirement.minTotalStaff}
               disabled={!editable}
@@ -242,8 +417,11 @@ export default function ShiftRulesPage() {
                 patchRules({
                   saturdayRequirement: {
                     ...rules.saturdayRequirement,
-                    minTotalStaff: Math.max(1, Number(event.target.value) || 1)
-                  }
+                    minTotalStaff: Math.max(
+                      Math.max(1, saturdayRequiredMaxByChildren),
+                      Number(event.target.value) || 1,
+                    ),
+                  },
                 })
               }
             />
@@ -251,9 +429,18 @@ export default function ShiftRulesPage() {
           </label>
         </div>
         <div className="mt-3 space-y-2">
-          {rules.saturdayRequirement.combinations.map((pattern, index) => (
-            <div key={`sat-combo-${index}`} className="grid gap-2 rounded-md bg-orange-50 p-3 md:grid-cols-12">
-              <div className="text-sm font-semibold text-orange-900 md:col-span-2">パターン{index + 1}</div>
+          {rules.saturdayRequirement.combinations.map((pattern, index) => {
+            const totalCount = pattern.partTimeCount + pattern.fullTimeCount;
+            const requiredCount = rules.saturdayRequirement.minTotalStaff;
+            const diff = totalCount - requiredCount;
+            return (
+            <div
+              key={`sat-combo-${index}`}
+              className="grid gap-2 rounded-md bg-orange-50 p-3 md:grid-cols-12"
+            >
+              <div className="text-sm font-semibold text-orange-900 md:col-span-2">
+                パターン{index + 1}
+              </div>
               <label className="text-sm text-orange-800 md:col-span-3">
                 パート
                 <input
@@ -266,10 +453,20 @@ export default function ShiftRulesPage() {
                     patchRules({
                       saturdayRequirement: {
                         ...rules.saturdayRequirement,
-                        combinations: rules.saturdayRequirement.combinations.map((item, comboIndex) =>
-                          comboIndex === index ? { ...item, partTimeCount: Math.max(0, Number(event.target.value) || 0) } : item
-                        )
-                      }
+                        combinations:
+                          rules.saturdayRequirement.combinations.map(
+                            (item, comboIndex) =>
+                              comboIndex === index
+                                ? {
+                                    ...item,
+                                    partTimeCount: Math.max(
+                                      0,
+                                      Number(event.target.value) || 0,
+                                    ),
+                                  }
+                                : item,
+                          ),
+                      },
                     })
                   }
                 />
@@ -287,29 +484,53 @@ export default function ShiftRulesPage() {
                     patchRules({
                       saturdayRequirement: {
                         ...rules.saturdayRequirement,
-                        combinations: rules.saturdayRequirement.combinations.map((item, comboIndex) =>
-                          comboIndex === index ? { ...item, fullTimeCount: Math.max(0, Number(event.target.value) || 0) } : item
-                        )
-                      }
+                        combinations:
+                          rules.saturdayRequirement.combinations.map(
+                            (item, comboIndex) =>
+                              comboIndex === index
+                                ? {
+                                    ...item,
+                                    fullTimeCount: Math.max(
+                                      0,
+                                      Number(event.target.value) || 0,
+                                    ),
+                                  }
+                                : item,
+                          ),
+                      },
                     })
                   }
                 />
                 <span className="ml-1">人</span>
               </label>
               <div className="text-sm text-orange-800 md:col-span-3">
-                合計: <span className="font-semibold">{pattern.partTimeCount + pattern.fullTimeCount}人</span>
+                合計:{" "}
+                <span
+                  className={`font-semibold ${
+                    totalCount === requiredCount
+                      ? ""
+                      : "text-red-600"
+                  }`}
+                >
+                  {totalCount}人
+                </span>
               </div>
               <div className="md:col-span-1">
                 {editable ? (
                   <button
                     className="rounded bg-red-100 px-2 py-1 text-sm text-red-700 hover:bg-red-200 disabled:opacity-60"
-                    disabled={rules.saturdayRequirement.combinations.length <= 1}
+                    disabled={
+                      rules.saturdayRequirement.combinations.length <= 1
+                    }
                     onClick={() =>
                       patchRules({
                         saturdayRequirement: {
                           ...rules.saturdayRequirement,
-                          combinations: rules.saturdayRequirement.combinations.filter((_, comboIndex) => comboIndex !== index)
-                        }
+                          combinations:
+                            rules.saturdayRequirement.combinations.filter(
+                              (_, comboIndex) => comboIndex !== index,
+                            ),
+                        },
                       })
                     }
                   >
@@ -317,8 +538,14 @@ export default function ShiftRulesPage() {
                   </button>
                 ) : null}
               </div>
+              {diff !== 0 ? (
+                <p className="rounded bg-red-100 px-2 py-1 text-xs font-semibold text-red-700 md:col-span-12">
+                  {diff > 0 ? `このパターンは ${diff}人 超過しています。` : `このパターンは ${Math.abs(diff)}人 不足しています。`}
+                </p>
+              ) : null}
             </div>
-          ))}
+            );
+          })}
           {editable ? (
             <button
               className="rounded-md bg-orange-100 px-3 py-2 text-sm font-semibold text-orange-700 hover:bg-orange-200"
@@ -326,8 +553,11 @@ export default function ShiftRulesPage() {
                 patchRules({
                   saturdayRequirement: {
                     ...rules.saturdayRequirement,
-                    combinations: [...rules.saturdayRequirement.combinations, { partTimeCount: 0, fullTimeCount: 0 }]
-                  }
+                    combinations: [
+                      ...rules.saturdayRequirement.combinations,
+                      { partTimeCount: 0, fullTimeCount: 0 },
+                    ],
+                  },
                 })
               }
             >
@@ -338,7 +568,9 @@ export default function ShiftRulesPage() {
       </section>
 
       <section className="rounded-xl bg-white p-4 shadow-sm">
-        <h2 className="text-lg font-semibold text-orange-900">振替休日ルール</h2>
+        <h2 className="text-lg font-semibold text-orange-900">
+          振替休日ルール
+        </h2>
         <div className="mt-3 space-y-3">
           <label className="flex items-center gap-2 text-sm text-orange-800">
             <input
@@ -350,8 +582,8 @@ export default function ShiftRulesPage() {
                 patchRules({
                   compensatoryHoliday: {
                     ...rules.compensatoryHoliday,
-                    enabled: event.target.checked
-                  }
+                    enabled: event.target.checked,
+                  },
                 })
               }
             />
@@ -367,8 +599,8 @@ export default function ShiftRulesPage() {
                 patchRules({
                   compensatoryHoliday: {
                     ...rules.compensatoryHoliday,
-                    sameWeekRequired: event.target.checked
-                  }
+                    sameWeekRequired: event.target.checked,
+                  },
                 })
               }
             />
@@ -384,8 +616,8 @@ export default function ShiftRulesPage() {
                 patchRules({
                   compensatoryHoliday: {
                     ...rules.compensatoryHoliday,
-                    description: event.target.value
-                  }
+                    description: event.target.value,
+                  },
                 })
               }
             />
@@ -395,7 +627,9 @@ export default function ShiftRulesPage() {
 
       <section className="rounded-xl bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold text-orange-900">自動作成の入力順番</h2>
+          <h2 className="text-lg font-semibold text-orange-900">
+            自動作成の入力順番
+          </h2>
           {editable ? (
             <button
               className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200"
@@ -407,14 +641,21 @@ export default function ShiftRulesPage() {
         </div>
         <div className="mt-3 space-y-2">
           {rules.creationOrder.map((step, index) => (
-            <div key={step.id} className="grid gap-2 rounded-md bg-orange-50 p-3 md:grid-cols-12">
-              <div className="text-sm font-semibold text-orange-900 md:col-span-1">{index + 1}</div>
+            <div
+              key={step.id}
+              className="grid gap-2 rounded-md bg-orange-50 p-3 md:grid-cols-12"
+            >
+              <div className="text-sm font-semibold text-orange-900 md:col-span-1">
+                {index + 1}
+              </div>
               <input
                 className="rounded bg-white px-2 py-1 text-sm text-orange-900 md:col-span-7"
                 value={step.title}
                 placeholder="手順名を入力"
                 disabled={!editable}
-                onChange={(event) => patchCreationStep(step.id, { title: event.target.value })}
+                onChange={(event) =>
+                  patchCreationStep(step.id, { title: event.target.value })
+                }
               />
               <div className="flex gap-1 md:col-span-4 md:justify-end">
                 {editable ? (
@@ -449,7 +690,9 @@ export default function ShiftRulesPage() {
       </section>
 
       <section className="rounded-xl bg-white p-4 shadow-sm">
-        <h2 className="text-lg font-semibold text-orange-900">自動作成方式（プログラム + AI）</h2>
+        <h2 className="text-lg font-semibold text-orange-900">
+          自動作成方式（プログラム + AI）
+        </h2>
         <div className="mt-3 space-y-3">
           <label className="flex items-center gap-2 text-sm text-orange-800">
             <input
@@ -461,8 +704,8 @@ export default function ShiftRulesPage() {
                 patchRules({
                   autoGenerationPolicy: {
                     ...rules.autoGenerationPolicy,
-                    useProgrammaticLogic: event.target.checked
-                  }
+                    useProgrammaticLogic: event.target.checked,
+                  },
                 })
               }
             />
@@ -478,8 +721,8 @@ export default function ShiftRulesPage() {
                 patchRules({
                   autoGenerationPolicy: {
                     ...rules.autoGenerationPolicy,
-                    useAi: event.target.checked
-                  }
+                    useAi: event.target.checked,
+                  },
                 })
               }
             />
@@ -495,8 +738,8 @@ export default function ShiftRulesPage() {
                 patchRules({
                   autoGenerationPolicy: {
                     ...rules.autoGenerationPolicy,
-                    skipSundayProcessing: event.target.checked
-                  }
+                    skipSundayProcessing: event.target.checked,
+                  },
                 })
               }
             />
@@ -512,8 +755,8 @@ export default function ShiftRulesPage() {
                 patchRules({
                   autoGenerationPolicy: {
                     ...rules.autoGenerationPolicy,
-                    preventFixedFullTimeShift: event.target.checked
-                  }
+                    preventFixedFullTimeShift: event.target.checked,
+                  },
                 })
               }
             />
@@ -529,8 +772,8 @@ export default function ShiftRulesPage() {
                 patchRules({
                   autoGenerationPolicy: {
                     ...rules.autoGenerationPolicy,
-                    description: event.target.value
-                  }
+                    description: event.target.value,
+                  },
                 })
               }
             />

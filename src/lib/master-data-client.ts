@@ -63,7 +63,12 @@ export async function saveMasterData(data: MasterData): Promise<void> {
     body: JSON.stringify({ ...data, updatedAt: new Date().toISOString() })
   });
   if (!response.ok) {
-    throw new Error("保存に失敗しました。");
+    try {
+      const payload = (await response.json()) as { error?: string };
+      throw new Error(payload.error || "保存に失敗しました。");
+    } catch {
+      throw new Error("保存に失敗しました。");
+    }
   }
 }
 

@@ -10,6 +10,7 @@ type ShiftMonthItem = {
   entries: ShiftEntry[];
   columns?: ShiftColumn[];
   requiredByTime?: RequiredStaffByTime[];
+  requiredByTimeSaturday?: RequiredStaffByTime[];
   dateMemos?: ShiftDateMemo[];
   updatedAt: string;
 };
@@ -18,6 +19,7 @@ export type ShiftMonthData = {
   entries: ShiftEntry[];
   columns?: ShiftColumn[];
   requiredByTime?: RequiredStaffByTime[];
+  requiredByTimeSaturday?: RequiredStaffByTime[];
   dateMemos?: ShiftDateMemo[];
 };
 
@@ -90,6 +92,7 @@ export async function getShiftMonth(month: string): Promise<ShiftMonthData> {
     entries: item?.entries ?? [],
     columns: item?.columns,
     requiredByTime: item?.requiredByTime,
+    requiredByTimeSaturday: item?.requiredByTimeSaturday,
     dateMemos: item?.dateMemos
   };
 }
@@ -107,6 +110,7 @@ export async function putShiftMonth(month: string, data: ShiftMonthData): Promis
         entries: data.entries,
         columns: data.columns,
         requiredByTime: data.requiredByTime,
+        requiredByTimeSaturday: data.requiredByTimeSaturday,
         dateMemos: data.dateMemos,
         updatedAt: new Date().toISOString()
       } satisfies ShiftMonthItem

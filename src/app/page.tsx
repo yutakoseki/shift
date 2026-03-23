@@ -137,6 +137,18 @@ function resolveRatioForAge(age: number, ratioByAge: Map<number, number>): numbe
   return null;
 }
 
+function requiredCountFromAgeCounts(childCountByAge: Map<number, number>, ratioByAge: Map<number, number>): number {
+  let requiredBase = 0;
+  childCountByAge.forEach((childCount, age) => {
+    const ratio = resolveRatioForAge(age, ratioByAge);
+    if (!ratio || ratio <= 0) {
+      return;
+    }
+    requiredBase += childCount / ratio;
+  });
+  return Math.ceil(requiredBase);
+}
+
 function weekdayFromDateText(date: string): number {
   const [yearText, monthText, dayText] = date.split("-");
   const year = Number(yearText);
@@ -222,6 +234,15 @@ function summaryStripeClass(columnIndex: number): string {
   return columnIndex % 2 === 0 ? "bg-orange-100/40" : "bg-orange-200/30";
 }
 
+function mapsEqualNumberRecord(a: Record<string, number>, b: Record<string, number>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) {
+    return false;
+  }
+  return aKeys.every((key) => a[key] === b[key]);
+}
+
 export default function HomePage() {
   const [loadingData, setLoadingData] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -241,6 +262,7 @@ export default function HomePage() {
   const [deleteTargetColumnId, setDeleteTargetColumnId] = useState<string | null>(null);
   const [showShortageModal, setShowShortageModal] = useState(false);
   const [requiredOverrideByTime, setRequiredOverrideByTime] = useState<Record<string, number>>({});
+  const [requiredSaturdayOverrideByTime, setRequiredSaturdayOverrideByTime] = useState<Record<string, number>>({});
   const [showResetRequiredModal, setShowResetRequiredModal] = useState(false);
   const [viewMode, setViewMode] = useState<"class" | "staff">("class");
   const [eventByDate, setEventByDate] = useState<Record<string, string>>({});
@@ -361,14 +383,7 @@ export default function HomePage() {
           childCountByAge.set(age, (childCountByAge.get(age) ?? 0) + 1);
         }
 
-        let requiredCountForWeekday = 0;
-        childCountByAge.forEach((childCount, age) => {
-          const ratio = resolveRatioForAge(age, ratioByAge);
-          if (!ratio || ratio <= 0) {
-            return;
-          }
-          requiredCountForWeekday += Math.ceil(childCount / ratio);
-        });
+        const requiredCountForWeekday = requiredCountFromAgeCounts(childCountByAge, ratioByAge);
 
         if (requiredCountForWeekday > maxRequiredCount) {
           maxRequiredCount = requiredCountForWeekday;
@@ -388,6 +403,102 @@ export default function HomePage() {
           : item.requiredCount
     }));
   }, [requiredOverrideByTime, requiredStaffByTime]);
+
+  const calculatedRequiredByTimeMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    requiredStaffByTime.forEach((item) => {
+      map[item.time] = item.requiredCount;
+    });
+    return map;
+  }, [requiredStaffByTime]);
+
+  const saturdayRequiredStaffByTimeCalculated = useMemo(() => {
+    if (!masterData) {
+      return REQUIRED_STAFF_TIMES.map((time) => ({ time, requiredCount: 0 }));
+    }
+    const ratioByAge = new Map(
+      masterData.childRatios
+        .filter((item) => Number.isFinite(item.age) && Number.isFinite(item.ratio) && item.ratio > 0)
+        .map((item) => [item.age, item.ratio])
+    );
+    const saturday = 6;
+    return REQUIRED_STAFF_TIMES.map((time) => {
+      const targetMinutes = timeToMinutes(time);
+      const childCountByAge = new Map<number, number>();
+      for (const child of masterData.children) {
+        const age = ageAtMonthStart(child.birthDate, month);
+        if (age === null) {
+          continue;
+        }
+        const attendance = child.attendanceByWeekday.find((slot) => slot.weekday === saturday);
+        if (!attendance || !attendance.enabled) {
+          continue;
+        }
+        const startMinutes = timeToMinutes(attendance.startTime);
+        const endMinutes = timeToMinutes(attendance.endTime);
+        if (targetMinutes < startMinutes || targetMinutes >= endMinutes) {
+          continue;
+        }
+        childCountByAge.set(age, (childCountByAge.get(age) ?? 0) + 1);
+      }
+      const requiredCount = requiredCountFromAgeCounts(childCountByAge, ratioByAge);
+      return { time, requiredCount };
+    });
+  }, [masterData, month]);
+
+  const calculatedSaturdayRequiredByTimeMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    saturdayRequiredStaffByTimeCalculated.forEach((item) => {
+      map[item.time] = item.requiredCount;
+    });
+    return map;
+  }, [saturdayRequiredStaffByTimeCalculated]);
+
+  const saturdayRequiredStaffByTime = useMemo(() => {
+    return saturdayRequiredStaffByTimeCalculated.map((item) => {
+      const override = requiredSaturdayOverrideByTime[item.time];
+      return {
+        time: item.time,
+        requiredCount: Number.isFinite(override) ? Math.max(0, override) : item.requiredCount
+      };
+    });
+  }, [requiredSaturdayOverrideByTime, saturdayRequiredStaffByTimeCalculated]);
+
+  // 旧データ（全時間帯を保存していた形式）を読み込んだ場合も、
+  // 現在の自動計算値との差分だけを上書きとして保持する。
+  useEffect(() => {
+    setRequiredOverrideByTime((prev) => {
+      const next: Record<string, number> = {};
+      REQUIRED_STAFF_TIMES.forEach((time) => {
+        const override = prev[time];
+        if (!Number.isFinite(override)) {
+          return;
+        }
+        const normalized = Math.max(0, override);
+        if (normalized !== (calculatedRequiredByTimeMap[time] ?? 0)) {
+          next[time] = normalized;
+        }
+      });
+      return mapsEqualNumberRecord(prev, next) ? prev : next;
+    });
+  }, [calculatedRequiredByTimeMap]);
+
+  useEffect(() => {
+    setRequiredSaturdayOverrideByTime((prev) => {
+      const next: Record<string, number> = {};
+      REQUIRED_STAFF_TIMES.forEach((time) => {
+        const override = prev[time];
+        if (!Number.isFinite(override)) {
+          return;
+        }
+        const normalized = Math.max(0, override);
+        if (normalized !== (calculatedSaturdayRequiredByTimeMap[time] ?? 0)) {
+          next[time] = normalized;
+        }
+      });
+      return mapsEqualNumberRecord(prev, next) ? prev : next;
+    });
+  }, [calculatedSaturdayRequiredByTimeMap]);
 
   const effectiveRequiredStaffCountByDate = useMemo(() => {
     const countByDate = new Map<string, number[]>();
@@ -432,19 +543,16 @@ export default function HomePage() {
           childCountByAge.set(age, (childCountByAge.get(age) ?? 0) + 1);
         }
 
-        let requiredCount = 0;
-        childCountByAge.forEach((childCount, age) => {
-          const ratio = resolveRatioForAge(age, ratioByAge);
-          if (!ratio || ratio <= 0) {
-            return;
-          }
-          requiredCount += Math.ceil(childCount / ratio);
-        });
+        const requiredCount = requiredCountFromAgeCounts(childCountByAge, ratioByAge);
 
         const override = requiredOverrideByTime[time];
         const withOverride = Number.isFinite(override) ? Math.max(0, override) : requiredCount;
         if (weekday === 6 && activeSaturdayRequirement.enabled) {
-          return Math.max(withOverride, activeSaturdayRequirement.minTotalStaff);
+          const saturdayOverride = requiredSaturdayOverrideByTime[time];
+          const saturdayCount = Number.isFinite(saturdayOverride)
+            ? Math.max(0, saturdayOverride)
+            : saturdayRequiredStaffByTime.find((item) => item.time === time)?.requiredCount ?? withOverride;
+          return Math.max(saturdayCount, activeSaturdayRequirement.minTotalStaff);
         }
         return withOverride;
       });
@@ -459,7 +567,9 @@ export default function HomePage() {
     dates,
     masterData,
     month,
-    requiredOverrideByTime
+    requiredOverrideByTime,
+    requiredSaturdayOverrideByTime,
+    saturdayRequiredStaffByTime
   ]);
 
   const assignedStaffCountByDateAndClass = useMemo(() => {
@@ -690,11 +800,20 @@ export default function HomePage() {
       setOffByDateAndStaff(nextOffByDateAndStaff);
       const nextRequiredOverrideByTime: Record<string, number> = {};
       (data.requiredByTime ?? []).forEach((item) => {
-        if (Number.isFinite(item.requiredCount) && item.requiredCount >= 0) {
+        if (REQUIRED_STAFF_TIMES.includes(item.time as (typeof REQUIRED_STAFF_TIMES)[number]) && Number.isFinite(item.requiredCount) && item.requiredCount >= 0) {
           nextRequiredOverrideByTime[item.time] = item.requiredCount;
         }
       });
-      setRequiredOverrideByTime(nextRequiredOverrideByTime);
+      const hasLegacyFullSnapshot = Object.keys(nextRequiredOverrideByTime).length >= REQUIRED_STAFF_TIMES.length;
+      setRequiredOverrideByTime(hasLegacyFullSnapshot ? {} : nextRequiredOverrideByTime);
+      const nextRequiredSaturdayOverrideByTime: Record<string, number> = {};
+      (data.requiredByTimeSaturday ?? []).forEach((item) => {
+        if (REQUIRED_STAFF_TIMES.includes(item.time as (typeof REQUIRED_STAFF_TIMES)[number]) && Number.isFinite(item.requiredCount) && item.requiredCount >= 0) {
+          nextRequiredSaturdayOverrideByTime[item.time] = item.requiredCount;
+        }
+      });
+      const hasLegacySaturdayFullSnapshot = Object.keys(nextRequiredSaturdayOverrideByTime).length >= REQUIRED_STAFF_TIMES.length;
+      setRequiredSaturdayOverrideByTime(hasLegacySaturdayFullSnapshot ? {} : nextRequiredSaturdayOverrideByTime);
       const nextEventByDate: Record<string, string> = {};
       const nextNoteByDate: Record<string, string> = {};
       (data.dateMemos ?? []).forEach((item) => {
@@ -747,11 +866,24 @@ export default function HomePage() {
   );
 
   const buildRequiredByTimePayload = useCallback(() => {
-    return effectiveRequiredStaffByTime.map((item) => ({
-      time: item.time,
-      requiredCount: item.requiredCount
-    }));
-  }, [effectiveRequiredStaffByTime]);
+    return REQUIRED_STAFF_TIMES.flatMap((time) => {
+      const override = requiredOverrideByTime[time];
+      if (!Number.isFinite(override)) {
+        return [];
+      }
+      return [{ time, requiredCount: Math.max(0, override) }];
+    });
+  }, [requiredOverrideByTime]);
+
+  const buildRequiredByTimeSaturdayPayload = useCallback(() => {
+    return REQUIRED_STAFF_TIMES.flatMap((time) => {
+      const override = requiredSaturdayOverrideByTime[time];
+      if (!Number.isFinite(override)) {
+        return [];
+      }
+      return [{ time, requiredCount: Math.max(0, override) }];
+    });
+  }, [requiredSaturdayOverrideByTime]);
 
   const buildDateMemosPayload = useCallback(() => {
     return dates
@@ -773,6 +905,7 @@ export default function HomePage() {
           entries: buildEntriesFromColumns(columns),
           columns,
           requiredByTime: buildRequiredByTimePayload(),
+          requiredByTimeSaturday: buildRequiredByTimeSaturdayPayload(),
           dateMemos: buildDateMemosPayload()
         })
       });
@@ -780,7 +913,7 @@ export default function HomePage() {
         throw new Error("列構成の保存に失敗しました");
       }
     },
-    [buildDateMemosPayload, buildEntriesFromColumns, buildRequiredByTimePayload, month]
+    [buildDateMemosPayload, buildEntriesFromColumns, buildRequiredByTimePayload, buildRequiredByTimeSaturdayPayload, month]
   );
 
   useEffect(() => {
@@ -798,6 +931,7 @@ export default function HomePage() {
           entries: buildEntriesFromColumns(shiftColumns),
           columns: shiftColumns,
           requiredByTime: buildRequiredByTimePayload(),
+          requiredByTimeSaturday: buildRequiredByTimeSaturdayPayload(),
           dateMemos: buildDateMemosPayload()
         })
       });
@@ -961,6 +1095,7 @@ export default function HomePage() {
 
   function resetRequiredStaffToCalculated(): void {
     setRequiredOverrideByTime({});
+    setRequiredSaturdayOverrideByTime({});
   }
 
   const compactClass = "text-[12px]";
@@ -2228,8 +2363,14 @@ export default function HomePage() {
           <p className="text-sm text-orange-700">
             必要先生人数の判定は日付ごと（曜日別）に行います。土曜日は土曜ルールの必要人数を適用します。
           </p>
+          <p className="mt-1 text-sm text-orange-800">
+            土曜日の必要人数:{" "}
+            <span className="font-semibold">
+              {activeSaturdayRequirement.enabled ? `${activeSaturdayRequirement.minTotalStaff}人` : "ルール無効"}
+            </span>
+          </p>
           <p className="mt-1 text-sm text-orange-700">
-            上段の必要人数入力は「全日共通の上書き値」です。必要に応じて調整できます。
+            上段は「通常(土曜)」の順で編集できます。左が全日共通、括弧内が土曜日専用の上書き値です。
           </p>
           <p className="mt-1 text-sm text-orange-700">
             {plannerStep === 2
@@ -2442,14 +2583,45 @@ export default function HomePage() {
                             min={0}
                             className="w-14 rounded bg-white px-1.5 py-0.5 text-right text-xs text-orange-900"
                             value={item.requiredCount}
-                            onChange={(event) =>
-                              setRequiredOverrideByTime((prev) => ({
-                                ...prev,
-                                [item.time]: Math.max(0, Number(event.target.value) || 0)
-                              }))
-                            }
+                            onChange={(event) => {
+                              const nextValue = Math.max(0, Number(event.target.value) || 0);
+                              setRequiredOverrideByTime((prev) => {
+                                const base = calculatedRequiredByTimeMap[item.time] ?? 0;
+                                if (nextValue === base) {
+                                  if (prev[item.time] === undefined) {
+                                    return prev;
+                                  }
+                                  const next = { ...prev };
+                                  delete next[item.time];
+                                  return next;
+                                }
+                                return { ...prev, [item.time]: nextValue };
+                              });
+                            }}
                           />
-                          <span className="ml-1">人</span>
+                          <span className="ml-1">人(</span>
+                          <input
+                            type="number"
+                            min={0}
+                            className="w-12 rounded bg-white px-1.5 py-0.5 text-right text-xs text-orange-900"
+                            value={saturdayRequiredStaffByTime[columnIndex]?.requiredCount ?? 0}
+                            onChange={(event) => {
+                              const nextValue = Math.max(0, Number(event.target.value) || 0);
+                              setRequiredSaturdayOverrideByTime((prev) => {
+                                const base = calculatedSaturdayRequiredByTimeMap[item.time] ?? 0;
+                                if (nextValue === base) {
+                                  if (prev[item.time] === undefined) {
+                                    return prev;
+                                  }
+                                  const next = { ...prev };
+                                  delete next[item.time];
+                                  return next;
+                                }
+                                return { ...prev, [item.time]: nextValue };
+                              });
+                            }}
+                          />
+                          <span className="ml-1">人)</span>
                         </td>
                       ))}
                     </tr>
@@ -2656,14 +2828,45 @@ export default function HomePage() {
                             min={0}
                             className="w-14 rounded bg-white px-1.5 py-0.5 text-right text-xs text-orange-900"
                             value={item.requiredCount}
-                            onChange={(event) =>
-                              setRequiredOverrideByTime((prev) => ({
-                                ...prev,
-                                [item.time]: Math.max(0, Number(event.target.value) || 0)
-                              }))
-                            }
+                            onChange={(event) => {
+                              const nextValue = Math.max(0, Number(event.target.value) || 0);
+                              setRequiredOverrideByTime((prev) => {
+                                const base = calculatedRequiredByTimeMap[item.time] ?? 0;
+                                if (nextValue === base) {
+                                  if (prev[item.time] === undefined) {
+                                    return prev;
+                                  }
+                                  const next = { ...prev };
+                                  delete next[item.time];
+                                  return next;
+                                }
+                                return { ...prev, [item.time]: nextValue };
+                              });
+                            }}
                           />
-                          <span className="ml-1">人</span>
+                          <span className="ml-1">人(</span>
+                          <input
+                            type="number"
+                            min={0}
+                            className="w-12 rounded bg-white px-1.5 py-0.5 text-right text-xs text-orange-900"
+                            value={saturdayRequiredStaffByTime[columnIndex]?.requiredCount ?? 0}
+                            onChange={(event) => {
+                              const nextValue = Math.max(0, Number(event.target.value) || 0);
+                              setRequiredSaturdayOverrideByTime((prev) => {
+                                const base = calculatedSaturdayRequiredByTimeMap[item.time] ?? 0;
+                                if (nextValue === base) {
+                                  if (prev[item.time] === undefined) {
+                                    return prev;
+                                  }
+                                  const next = { ...prev };
+                                  delete next[item.time];
+                                  return next;
+                                }
+                                return { ...prev, [item.time]: nextValue };
+                              });
+                            }}
+                          />
+                          <span className="ml-1">人)</span>
                         </td>
                       ))}
                     </tr>
@@ -2847,7 +3050,9 @@ export default function HomePage() {
           <div className="fixed inset-0 z-50 m-0 flex items-center justify-center bg-black/40">
             <div className="mx-4 w-full max-w-sm rounded-lg bg-white p-4 shadow-lg">
               <h3 className="text-base font-semibold text-orange-900">必要人数リセットの確認</h3>
-              <p className="mt-1 text-sm text-orange-700">手動で修正した必要人数を自動計算値に戻します。よろしいですか？</p>
+              <p className="mt-1 text-sm text-orange-700">
+                手動で修正した必要人数（通常/土曜）を自動計算値に戻します。よろしいですか？
+              </p>
               <div className="mt-4 flex justify-end gap-2">
                 <button
                   className="rounded bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200"

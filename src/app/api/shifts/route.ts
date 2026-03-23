@@ -51,6 +51,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       entries: data.entries,
       columns: data.columns,
       requiredByTime: data.requiredByTime,
+      requiredByTimeSaturday: data.requiredByTimeSaturday,
       dateMemos: data.dateMemos
     });
   } catch (error) {
@@ -69,6 +70,7 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
       entries?: ShiftEntry[];
       columns?: ShiftColumn[];
       requiredByTime?: RequiredStaffByTime[];
+      requiredByTimeSaturday?: RequiredStaffByTime[];
       dateMemos?: ShiftDateMemo[];
     };
     const month = body.month ?? null;
@@ -88,12 +90,19 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
     if (requiredByTime !== undefined && (!Array.isArray(requiredByTime) || !requiredByTime.every(isValidRequiredStaff))) {
       return NextResponse.json({ error: "invalid requiredByTime" }, { status: 400 });
     }
+    const requiredByTimeSaturday = body.requiredByTimeSaturday;
+    if (
+      requiredByTimeSaturday !== undefined &&
+      (!Array.isArray(requiredByTimeSaturday) || !requiredByTimeSaturday.every(isValidRequiredStaff))
+    ) {
+      return NextResponse.json({ error: "invalid requiredByTimeSaturday" }, { status: 400 });
+    }
     const dateMemos = body.dateMemos;
     if (dateMemos !== undefined && (!Array.isArray(dateMemos) || !dateMemos.every(isValidDateMemo))) {
       return NextResponse.json({ error: "invalid dateMemos" }, { status: 400 });
     }
 
-    await putShiftMonth(month, { entries, columns, requiredByTime, dateMemos });
+    await putShiftMonth(month, { entries, columns, requiredByTime, requiredByTimeSaturday, dateMemos });
     return NextResponse.json({ ok: true });
   } catch (error) {
     logError("api/shifts.PUT", "request failed", error);

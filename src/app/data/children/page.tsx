@@ -72,12 +72,18 @@ function rainbowHue(index: number, total: number): number {
   return Math.round((index / (total - 1)) * 330);
 }
 
+function formatOneDecimal(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(1);
+}
+
 type ChildAttendanceRow = {
   id: string;
   name: string;
   classId: string;
   classLabel: string;
   ageGroup: string;
+  age: number | null;
   startTime: string;
   endTime: string;
   enabled: boolean;
@@ -325,6 +331,7 @@ export default function ChildrenPage() {
         classId: child.classId,
         classLabel,
         ageGroup,
+        age: ageFromBirthDate(child.birthDate),
         startTime: attendance.startTime,
         endTime: attendance.endTime,
         enabled: attendance.enabled,
@@ -448,6 +455,76 @@ export default function ChildrenPage() {
       total: Math.max(sequenceIndex, 1)
     };
   }, [groupedRows]);
+
+  const ratioByAge = useMemo(() => {
+    if (!data) {
+      return new Map<number, number>();
+    }
+    const map = new Map<number, number>();
+    data.childRatios.forEach((item) => {
+      if (Number.isFinite(item.age) && Number.isFinite(item.ratio) && item.ratio > 0) {
+        map.set(Math.floor(item.age), Math.floor(item.ratio));
+      }
+    });
+    return map;
+  }, [data]);
+
+  const ratioAges = useMemo(() => {
+    const ages = Array.from(ratioByAge.keys()).sort((a, b) => a - b);
+    if (ages.length > 0) {
+      return ages;
+    }
+    return [0, 1, 2, 3, 4, 5];
+  }, [ratioByAge]);
+
+  const ratioTimeline = useMemo(() => {
+    const allRows = groupedRows.flatMap((ageGroupBlock) => ageGroupBlock.classes.flatMap((classGroup) => classGroup.rows));
+    return timelineSlots.map((slot) => {
+      const activeRows = allRows.filter((row) => row.enabled && slot >= row.startMinutes && slot < row.endMinutes);
+      const ageCount = new Map<number, number>(ratioAges.map((age) => [age, 0]));
+      let unknownAgeChildren = 0;
+
+      activeRows.forEach((row) => {
+        if (row.age === null) {
+          unknownAgeChildren += 1;
+          return;
+        }
+        if (!ageCount.has(row.age)) {
+          ageCount.set(row.age, 0);
+        }
+        ageCount.set(row.age, (ageCount.get(row.age) ?? 0) + 1);
+      });
+
+      let baseRequirement = 0;
+      const ageRequirement = new Map<number, number>(ratioAges.map((age) => [age, 0]));
+      ageCount.forEach((count, age) => {
+        const ratio = ratioByAge.get(age);
+        if (!ratio || ratio <= 0) {
+          ageRequirement.set(age, count);
+          unknownAgeChildren += count;
+          return;
+        }
+        const needed = count / ratio;
+        ageRequirement.set(age, needed);
+        baseRequirement += needed;
+      });
+      const unknownRequirement = unknownAgeChildren;
+      baseRequirement += unknownRequirement;
+      const requiredStaff = Math.ceil(baseRequirement);
+
+      return {
+        slot,
+        ageCount,
+        ageRequirement,
+        unknownAgeChildren,
+        unknownRequirement,
+        baseRequirement,
+        childrenCount: activeRows.length,
+        requiredStaff,
+        effectiveRatio: requiredStaff > 0 ? activeRows.length / requiredStaff : 0
+      };
+    });
+  }, [groupedRows, ratioAges, ratioByAge, timelineSlots]);
 
   if (loading) {
     return <FullscreenLoading />;
@@ -835,6 +912,130 @@ export default function ChildrenPage() {
                   })}
                 </Fragment>
               ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-4 overflow-hidden rounded-md border border-orange-100">
+          <table className="min-w-full table-fixed border-collapse text-[9px] leading-none">
+            <thead>
+              <tr className="bg-orange-100/60">
+                <th rowSpan={2} className="sticky left-0 z-20 w-28 min-w-28 border border-white bg-orange-100 px-1 py-1 text-left align-middle">
+                  子どもの人数
+                </th>
+                {hourGroups.map((group) => (
+                  <th
+                    key={`children-hour-${group.hour}`}
+                    colSpan={group.count}
+                    className="border border-white px-0.5 py-0.5 text-center text-[8px] text-orange-800"
+                  >
+                    {group.hour}時
+                  </th>
+                ))}
+              </tr>
+              <tr className="bg-orange-100/60">
+                {timelineSlots.map((slot) => (
+                  <th key={`children-minute-${slot}`} className="w-3 min-w-3 border border-white px-0 py-0.5 text-center text-[7px] text-orange-800">
+                    {String(slot % 60).padStart(2, "0")}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ratioAges.map((age) => (
+                <tr key={`children-age-row-${age}`} className="bg-white">
+                  <th className="sticky left-0 w-28 min-w-28 border border-white bg-white px-1 py-1 text-left font-medium text-orange-900">{age}歳児</th>
+                  {ratioTimeline.map((item) => (
+                    <td key={`children-age-${age}-${item.slot}`} className="h-4 w-3 min-w-3 border border-white px-0 text-center text-[8px] text-orange-900">
+                      {item.ageCount.get(age) ?? 0}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              <tr className="bg-white">
+                <th className="sticky left-0 w-28 min-w-28 border border-white bg-white px-1 py-1 text-left font-medium text-orange-900">年齢不明</th>
+                {ratioTimeline.map((item) => (
+                  <td key={`children-unknown-${item.slot}`} className="h-4 w-3 min-w-3 border border-white px-0 text-center text-[8px] text-orange-900">
+                    {item.unknownAgeChildren}
+                  </td>
+                ))}
+              </tr>
+              <tr className="bg-orange-50/40">
+                <th className="sticky left-0 w-28 min-w-28 border border-white bg-white px-1 py-1 text-left font-medium text-orange-900">合計</th>
+                {ratioTimeline.map((item) => (
+                  <td key={`children-total-${item.slot}`} className="h-4 w-3 min-w-3 border border-white px-0 text-center text-[8px] font-semibold text-orange-900">
+                    {item.childrenCount}
+                  </td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-2 overflow-hidden rounded-md border border-orange-100">
+          <table className="min-w-full table-fixed border-collapse text-[9px] leading-none">
+            <thead>
+              <tr className="bg-orange-100/60">
+                <th rowSpan={2} className="sticky left-0 z-20 w-28 min-w-28 border border-white bg-orange-100 px-1 py-1 text-left align-middle">
+                  必要配置計算
+                </th>
+                {hourGroups.map((group) => (
+                  <th
+                    key={`ratio-hour-${group.hour}`}
+                    colSpan={group.count}
+                    className="border border-white px-0.5 py-0.5 text-center text-[8px] text-orange-800"
+                  >
+                    {group.hour}時
+                  </th>
+                ))}
+              </tr>
+              <tr className="bg-orange-100/60">
+                {timelineSlots.map((slot) => (
+                  <th key={`ratio-minute-${slot}`} className="w-3 min-w-3 border border-white px-0 py-0.5 text-center text-[7px] text-orange-800">
+                    {String(slot % 60).padStart(2, "0")}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ratioAges.map((age) => (
+                <tr key={`ratio-age-row-${age}`} className="bg-white">
+                  <th className="sticky left-0 w-28 min-w-28 border border-white bg-white px-1 py-1 text-left font-medium text-orange-900">{age}歳児</th>
+                  {ratioTimeline.map((item) => (
+                    <td key={`ratio-age-${age}-${item.slot}`} className="h-4 w-3 min-w-3 border border-white px-0 text-center text-[8px] text-orange-900">
+                      {formatOneDecimal(item.ageRequirement.get(age) ?? 0)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              <tr className="bg-white">
+                <th className="sticky left-0 w-28 min-w-28 border border-white bg-white px-1 py-1 text-left font-medium text-orange-900">年齢不明</th>
+                {ratioTimeline.map((item) => (
+                  <td key={`ratio-unknown-${item.slot}`} className="h-4 w-3 min-w-3 border border-white px-0 text-center text-[8px] text-orange-900">
+                    {formatOneDecimal(item.unknownRequirement)}
+                  </td>
+                ))}
+              </tr>
+              <tr className="bg-orange-50/40">
+                <th className="sticky left-0 w-28 min-w-28 border border-white bg-white px-1 py-1 text-left font-medium text-orange-900">
+                  配置基準
+                </th>
+                {ratioTimeline.map((item) => (
+                  <td key={`ratio-required-${item.slot}`} className="h-4 w-3 min-w-3 border border-white px-0 text-center text-[8px] text-orange-900">
+                    {formatOneDecimal(item.baseRequirement)}
+                  </td>
+                ))}
+              </tr>
+              <tr className="bg-white">
+                <th className="sticky left-0 w-28 min-w-28 border border-white bg-white px-1 py-1 text-left font-medium text-orange-900">
+                  必要保育士数
+                </th>
+                {ratioTimeline.map((item) => (
+                  <td key={`ratio-staff-${item.slot}`} className="h-4 w-3 min-w-3 border border-white px-0 text-center text-[8px] font-semibold text-orange-900">
+                    {item.requiredStaff}
+                  </td>
+                ))}
+              </tr>
             </tbody>
           </table>
         </div>

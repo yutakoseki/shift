@@ -37,5 +37,6 @@ export type ShiftMonthResponse = {
   entries: ShiftEntry[];
   columns?: ShiftColumn[];
   requiredByTime?: RequiredStaffByTime[];
+  requiredByTimeSaturday?: RequiredStaffByTime[];
   dateMemos?: ShiftDateMemo[];
 };

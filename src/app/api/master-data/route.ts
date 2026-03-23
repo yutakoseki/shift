@@ -16,6 +16,88 @@ function toMinutes(value: string): number {
   return Number(hourText) * 60 + Number(minuteText);
 }
 
+function ageFromBirthDate(birthDate: string): number | null {
+  if (!birthDate) {
+    return null;
+  }
+  const birth = new Date(birthDate);
+  if (Number.isNaN(birth.getTime())) {
+    return null;
+  }
+  const now = new Date();
+  let age = now.getFullYear() - birth.getFullYear();
+  const monthDiff = now.getMonth() - birth.getMonth();
+  const dayDiff = now.getDate() - birth.getDate();
+  if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) {
+    age -= 1;
+  }
+  return Math.max(age, 0);
+}
+
+function calculateSaturdayRequiredMax(data: MasterData): number {
+  const saturday = 6;
+  const ratioByAge = new Map<number, number>();
+  data.childRatios.forEach((item) => {
+    if (Number.isFinite(item.age) && Number.isFinite(item.ratio) && item.ratio > 0) {
+      ratioByAge.set(Math.floor(item.age), item.ratio);
+    }
+  });
+
+  const saturdayAttendances = data.children
+    .map((child) => {
+      const attendance = child.attendanceByWeekday.find((slot) => slot.weekday === saturday);
+      if (!attendance || !attendance.enabled) {
+        return null;
+      }
+      return {
+        age: ageFromBirthDate(child.birthDate),
+        startMinutes: toMinutes(attendance.startTime),
+        endMinutes: toMinutes(attendance.endTime)
+      };
+    })
+    .filter((item): item is { age: number | null; startMinutes: number; endMinutes: number } => item !== null)
+    .filter((item) => item.startMinutes < item.endMinutes);
+
+  if (saturdayAttendances.length === 0) {
+    return 0;
+  }
+
+  const start = Math.max(0, Math.floor(Math.min(...saturdayAttendances.map((item) => item.startMinutes)) / 15) * 15);
+  const end = Math.min(24 * 60, Math.ceil(Math.max(...saturdayAttendances.map((item) => item.endMinutes)) / 15) * 15);
+
+  let maxRequired = 0;
+  for (let slot = start; slot < end; slot += 15) {
+    const ageCount = new Map<number, number>();
+    let unknownAgeChildren = 0;
+    saturdayAttendances.forEach((item) => {
+      if (slot < item.startMinutes || slot >= item.endMinutes) {
+        return;
+      }
+      if (item.age === null) {
+        unknownAgeChildren += 1;
+        return;
+      }
+      ageCount.set(item.age, (ageCount.get(item.age) ?? 0) + 1);
+    });
+
+    let baseRequirement = 0;
+    ageCount.forEach((count, age) => {
+      const ratio = ratioByAge.get(age);
+      if (!ratio || ratio <= 0) {
+        unknownAgeChildren += count;
+        return;
+      }
+      baseRequirement += count / ratio;
+    });
+    const required = Math.ceil(baseRequirement + unknownAgeChildren);
+    if (required > maxRequired) {
+      maxRequired = required;
+    }
+  }
+
+  return maxRequired;
+}
+
 function isMasterData(data: MasterData): boolean {
   if (!Array.isArray(data.fullTimeStaff) || !Array.isArray(data.partTimeStaff) || !Array.isArray(data.children)) {
     return false;
@@ -162,6 +244,28 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
     const body = (await request.json()) as MasterData;
     if (!isMasterData(body)) {
       return NextResponse.json({ error: "invalid master data" }, { status: 400 });
+    }
+    const hasInvalidSaturdayCombination = body.shiftRules.saturdayRequirement.combinations.some(
+      (item) => item.partTimeCount + item.fullTimeCount !== body.shiftRules.saturdayRequirement.minTotalStaff
+    );
+    if (hasInvalidSaturdayCombination) {
+      return NextResponse.json(
+        {
+          error: `土曜日パターンの合計人数（パート+常勤）は必要人数（${body.shiftRules.saturdayRequirement.minTotalStaff}人）と同じにしてください。`
+        },
+        { status: 400 }
+      );
+    }
+    if (body.shiftRules.saturdayRequirement.enabled) {
+      const saturdayRequiredMax = calculateSaturdayRequiredMax(body);
+      if (body.shiftRules.saturdayRequirement.minTotalStaff < saturdayRequiredMax) {
+        return NextResponse.json(
+          {
+            error: `土曜日の最低必要人数は対人数MAX（${saturdayRequiredMax}人）以上で設定してください。`
+          },
+          { status: 400 }
+        );
+      }
     }
 
     await putMasterData({
