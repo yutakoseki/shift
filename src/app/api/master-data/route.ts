@@ -214,6 +214,7 @@ function isMasterData(data: MasterData): boolean {
   const validAutoGenerationPolicy =
     typeof data.shiftRules.autoGenerationPolicy?.useProgrammaticLogic === "boolean" &&
     typeof data.shiftRules.autoGenerationPolicy?.useAi === "boolean" &&
+    typeof data.shiftRules.autoGenerationPolicy?.sundayChildcareEnabled === "boolean" &&
     typeof data.shiftRules.autoGenerationPolicy?.skipSundayProcessing === "boolean" &&
     typeof data.shiftRules.autoGenerationPolicy?.preventFixedFullTimeShift === "boolean" &&
     typeof data.shiftRules.autoGenerationPolicy?.description === "string";
@@ -268,8 +269,19 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
       }
     }
 
-    await putMasterData({
+    const normalizedBody: MasterData = {
       ...body,
+      shiftRules: {
+        ...body.shiftRules,
+        autoGenerationPolicy: {
+          ...body.shiftRules.autoGenerationPolicy,
+          skipSundayProcessing: !body.shiftRules.autoGenerationPolicy.sundayChildcareEnabled
+        }
+      }
+    };
+
+    await putMasterData({
+      ...normalizedBody,
       updatedAt: new Date().toISOString()
     });
     return NextResponse.json({ ok: true });

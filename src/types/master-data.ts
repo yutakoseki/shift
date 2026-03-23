@@ -77,6 +77,7 @@ export type ShiftRuleCreationStep = {
 export type ShiftAutoGenerationPolicy = {
   useProgrammaticLogic: boolean;
   useAi: boolean;
+  sundayChildcareEnabled: boolean;
   skipSundayProcessing: boolean;
   preventFixedFullTimeShift: boolean;
   description: string;
@@ -231,6 +232,11 @@ function normalizeShiftRules(input: ShiftRules | undefined): ShiftRules {
         }))
     : defaults.creationOrder;
 
+  const normalizedSundayChildcareEnabled =
+    typeof input.autoGenerationPolicy?.sundayChildcareEnabled === "boolean"
+      ? input.autoGenerationPolicy.sundayChildcareEnabled
+      : defaults.autoGenerationPolicy.sundayChildcareEnabled;
+
   return {
     saturdayRequirement: {
       enabled:
@@ -263,10 +269,9 @@ function normalizeShiftRules(input: ShiftRules | undefined): ShiftRules {
           ? input.autoGenerationPolicy.useProgrammaticLogic
           : defaults.autoGenerationPolicy.useProgrammaticLogic,
       useAi: typeof input.autoGenerationPolicy?.useAi === "boolean" ? input.autoGenerationPolicy.useAi : defaults.autoGenerationPolicy.useAi,
-      skipSundayProcessing:
-        typeof input.autoGenerationPolicy?.skipSundayProcessing === "boolean"
-          ? input.autoGenerationPolicy.skipSundayProcessing
-          : defaults.autoGenerationPolicy.skipSundayProcessing,
+      sundayChildcareEnabled: normalizedSundayChildcareEnabled,
+      // 日曜保育未実施なら、日曜処理は常に除外する
+      skipSundayProcessing: !normalizedSundayChildcareEnabled,
       preventFixedFullTimeShift:
         typeof input.autoGenerationPolicy?.preventFixedFullTimeShift === "boolean"
           ? input.autoGenerationPolicy.preventFixedFullTimeShift
@@ -328,6 +333,7 @@ export function createDefaultShiftRules(): ShiftRules {
     autoGenerationPolicy: {
       useProgrammaticLogic: true,
       useAi: true,
+      sundayChildcareEnabled: false,
       skipSundayProcessing: true,
       preventFixedFullTimeShift: true,
       description: "シフト自動作成は、ルールベースのプログラムとAI補助を組み合わせて実行する。"

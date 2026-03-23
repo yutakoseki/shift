@@ -76,19 +76,22 @@ function classLabel(classItem) {
 
 function buildFullTimeStaff() {
   return [
-    { id: "full-001", name: "田中 早苗", mainClass: "ひよこ,あひる", possibleShiftPatternCodes: ["B1", "B2", "C1", "F1"] },
-    { id: "full-002", name: "佐藤 美咲", mainClass: "うさぎ", possibleShiftPatternCodes: ["B1", "B2", "C1", "D1"] },
-    { id: "full-003", name: "鈴木 京子", mainClass: "くま", possibleShiftPatternCodes: ["B3", "C2", "D2", "E1"] },
-    { id: "full-004", name: "高橋 直子", mainClass: "きりん", possibleShiftPatternCodes: ["C1", "C2", "D1", "D2"] },
-    { id: "full-005", name: "伊藤 真由", mainClass: "ぞう", possibleShiftPatternCodes: ["C3", "D2", "D3", "N1"] },
-    { id: "full-006", name: "渡辺 彩", mainClass: "ひよこ,うさぎ", possibleShiftPatternCodes: ["B2", "C2", "D1", "E2"] },
-    { id: "full-007", name: "山本 綾", mainClass: "あひる,くま", possibleShiftPatternCodes: ["B4", "C4", "D4", "E3"] },
-    { id: "full-008", name: "中村 由佳", mainClass: "きりん,ぞう", possibleShiftPatternCodes: ["B3", "C3", "D3", "N1"] },
-    { id: "full-009", name: "小川 真希", mainClass: "ひよこ", possibleShiftPatternCodes: ["B1", "C1", "D1", "S3"] },
-    { id: "full-010", name: "石井 玲奈", mainClass: "あひる", possibleShiftPatternCodes: ["B2", "C2", "D2", "E2"] },
-    { id: "full-011", name: "林 由美", mainClass: "うさぎ,くま", possibleShiftPatternCodes: ["B3", "C3", "D3", "F1"] },
-    { id: "full-012", name: "井口 美帆", mainClass: "きりん", possibleShiftPatternCodes: ["C2", "D2", "E3", "L1"] },
-    { id: "full-013", name: "三浦 佳奈", mainClass: "ぞう", possibleShiftPatternCodes: ["C4", "D4", "N1", "N2"] }
+    { id: "full-001", name: "田中 早苗", mainClass: "ひよこ,あひる", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-002", name: "佐藤 美咲", mainClass: "うさぎ", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-003", name: "鈴木 京子", mainClass: "くま", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-004", name: "高橋 直子", mainClass: "きりん", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-005", name: "伊藤 真由", mainClass: "ぞう", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-006", name: "渡辺 彩", mainClass: "ひよこ,うさぎ", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-007", name: "山本 綾", mainClass: "あひる,くま", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-008", name: "中村 由佳", mainClass: "きりん,ぞう", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-009", name: "小川 真希", mainClass: "ひよこ", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-010", name: "石井 玲奈", mainClass: "あひる", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-011", name: "林 由美", mainClass: "うさぎ,くま", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-012", name: "井口 美帆", mainClass: "きりん", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-013", name: "三浦 佳奈", mainClass: "ぞう", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-014", name: "金子 理恵", mainClass: "ひよこ,あひる", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-015", name: "久保田 咲", mainClass: "うさぎ,くま", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] },
+    { id: "full-016", name: "藤田 明日香", mainClass: "きりん,ぞう", possibleShiftPatternCodes: ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"] }
   ];
 }
 
@@ -176,15 +179,15 @@ function buildChildren(classes) {
 
   const rows = [
     ["child-001", "青木 はる", year - 1, 6, 12, "class-hiyoko", "08:00", "17:00", false],
-    ["child-002", "井上 みお", year - 1, 3, 7, "class-hiyoko", "08:30", "17:30", false],
+    ["child-002", "井上 みお", year - 1, 3, 7, "class-hiyoko", "07:00", "17:30", false],
     ["child-003", "岡田 そうた", year - 1, 1, 21, "class-ahiru", "09:00", "18:00", true],
     ["child-004", "木村 りこ", year - 1, 10, 2, "class-ahiru", "08:15", "17:15", false],
-    ["child-005", "近藤 ひなた", year - 3, 5, 19, "class-usagi", "08:30", "17:30", false],
+    ["child-005", "近藤 ひなた", year - 3, 5, 19, "class-usagi", "07:30", "17:30", false],
     ["child-006", "清水 けんと", year - 3, 8, 9, "class-usagi", "09:00", "18:00", false],
     ["child-007", "田村 えま", year - 2, 12, 25, "class-kuma", "08:00", "17:00", false],
     ["child-008", "永井 とうま", year - 3, 2, 14, "class-kuma", "08:45", "17:45", true],
     ["child-009", "西田 こと", year - 5, 4, 1, "class-kirin", "09:00", "18:00", false],
-    ["child-010", "野村 みな", year - 4, 7, 18, "class-kirin", "08:30", "17:30", false],
+    ["child-010", "野村 みな", year - 4, 7, 18, "class-kirin", "07:45", "17:30", false],
     ["child-011", "橋本 たいが", year - 5, 9, 5, "class-zou", "09:00", "18:30", true],
     ["child-012", "藤本 ゆな", year - 4, 11, 27, "class-zou", "08:15", "17:15", false],
     ["child-013", "前田 さな", year - 1, 7, 4, "class-hiyoko", "08:00", "16:30", false],
@@ -193,7 +196,7 @@ function buildChildren(classes) {
     ["child-016", "山下 れお", year - 3, 3, 16, "class-kuma", "08:45", "18:00", true],
     ["child-017", "山口 しおり", year - 4, 12, 8, "class-kirin", "09:00", "18:00", false],
     ["child-018", "吉川 そう", year - 5, 2, 3, "class-zou", "08:30", "17:45", false],
-    ["child-019", "安藤 ひなの", year - 1, 4, 15, "class-hiyoko", "08:30", "17:00", false],
+    ["child-019", "安藤 ひなの", year - 1, 4, 15, "class-hiyoko", "07:30", "17:00", false],
     ["child-020", "石田 たくみ", year - 1, 9, 30, "class-hiyoko", "09:00", "18:00", true],
     ["child-021", "上田 こはる", year - 1, 2, 10, "class-ahiru", "08:15", "17:15", false],
     ["child-022", "遠藤 そうすけ", year - 1, 11, 6, "class-ahiru", "08:45", "17:45", false],
@@ -202,7 +205,7 @@ function buildChildren(classes) {
     ["child-025", "川口 かんな", year - 3, 6, 5, "class-kuma", "08:00", "17:00", false],
     ["child-026", "工藤 れん", year - 2, 10, 13, "class-kuma", "08:45", "18:00", false],
     ["child-027", "小松 あかり", year - 5, 1, 26, "class-kirin", "09:00", "18:00", true],
-    ["child-028", "坂本 はやと", year - 4, 4, 8, "class-kirin", "08:30", "17:30", false],
+    ["child-028", "坂本 はやと", year - 4, 4, 8, "class-kirin", "07:15", "17:30", false],
     ["child-029", "塩谷 みづき", year - 5, 7, 1, "class-zou", "09:00", "18:15", false],
     ["child-030", "島田 こうせい", year - 4, 3, 19, "class-zou", "08:15", "17:15", true],
     ["child-031", "杉本 ひかる", year - 1, 5, 27, "class-hiyoko", "08:00", "16:30", false],
@@ -210,7 +213,27 @@ function buildChildren(classes) {
     ["child-033", "高木 たくと", year - 3, 9, 14, "class-usagi", "09:00", "17:30", false],
     ["child-034", "竹内 りお", year - 2, 2, 24, "class-kuma", "08:45", "18:00", true],
     ["child-035", "中尾 さくら", year - 4, 6, 29, "class-kirin", "09:00", "18:00", false],
-    ["child-036", "長谷川 いつき", year - 5, 11, 11, "class-zou", "08:30", "17:45", false]
+    ["child-036", "長谷川 いつき", year - 5, 11, 11, "class-zou", "08:30", "17:45", false],
+    ["child-037", "平井 あおい", year - 1, 8, 7, "class-hiyoko", "07:00", "17:00", false],
+    ["child-038", "福田 りく", year - 1, 4, 23, "class-hiyoko", "08:45", "17:30", true],
+    ["child-039", "堀田 みおり", year - 1, 9, 12, "class-ahiru", "08:30", "17:30", false],
+    ["child-040", "本田 そうま", year - 1, 1, 31, "class-ahiru", "09:00", "18:00", false],
+    ["child-041", "益田 めい", year - 3, 2, 9, "class-usagi", "08:15", "17:15", false],
+    ["child-042", "松井 かい", year - 2, 7, 3, "class-usagi", "08:45", "17:45", true],
+    ["child-043", "水野 ゆいと", year - 3, 10, 17, "class-kuma", "08:30", "17:30", false],
+    ["child-044", "宮崎 さき", year - 2, 5, 26, "class-kuma", "09:00", "18:00", false],
+    ["child-045", "村田 しゅう", year - 5, 3, 4, "class-kirin", "07:45", "17:30", true],
+    ["child-046", "望月 えな", year - 4, 8, 15, "class-kirin", "09:00", "18:00", false],
+    ["child-047", "森川 りん", year - 5, 12, 21, "class-zou", "08:15", "17:15", false],
+    ["child-048", "矢野 はると", year - 4, 4, 28, "class-zou", "08:45", "18:00", true],
+    ["child-049", "山内 ゆず", year - 1, 6, 6, "class-hiyoko", "08:00", "16:45", false],
+    ["child-050", "横山 だいき", year - 1, 11, 20, "class-ahiru", "07:15", "17:00", false],
+    ["child-051", "吉岡 あや", year - 3, 3, 30, "class-usagi", "09:00", "17:30", false],
+    ["child-052", "和田 けん", year - 2, 9, 9, "class-kuma", "08:45", "18:00", true],
+    ["child-053", "荒木 みお", year - 4, 1, 13, "class-kirin", "09:00", "18:00", false],
+    ["child-054", "井本 そら", year - 5, 7, 25, "class-zou", "08:30", "17:45", false],
+    ["child-055", "宇野 さな", year - 1, 5, 2, "class-hiyoko", "08:15", "17:15", false],
+    ["child-056", "江口 りつき", year - 3, 12, 18, "class-usagi", "08:45", "17:45", true]
   ];
 
   return rows.map(([id, name, y, m, d, classId, startTime, endTime, saturdayEnabled]) => {
@@ -254,6 +277,7 @@ function buildShiftRules() {
     autoGenerationPolicy: {
       useProgrammaticLogic: true,
       useAi: true,
+      sundayChildcareEnabled: false,
       skipSundayProcessing: true,
       preventFixedFullTimeShift: true,
       description: "シフト自動作成は、ルールベースのプログラムとAI補助を組み合わせて実行する。"

@@ -340,6 +340,7 @@ export default function HomePage() {
     () => masterData?.shiftRules?.autoGenerationPolicy ?? createDefaultShiftRules().autoGenerationPolicy,
     [masterData]
   );
+  const sundayShiftInputEnabled = activeAutoGenerationPolicy.sundayChildcareEnabled;
   const activeSaturdayRequirement = useMemo(
     () => masterData?.shiftRules?.saturdayRequirement ?? createDefaultShiftRules().saturdayRequirement,
     [masterData]
@@ -552,7 +553,7 @@ export default function HomePage() {
           const saturdayCount = Number.isFinite(saturdayOverride)
             ? Math.max(0, saturdayOverride)
             : saturdayRequiredStaffByTime.find((item) => item.time === time)?.requiredCount ?? withOverride;
-          return Math.max(saturdayCount, activeSaturdayRequirement.minTotalStaff);
+          return saturdayCount;
         }
         return withOverride;
       });
@@ -563,7 +564,6 @@ export default function HomePage() {
   }, [
     activeAutoGenerationPolicy.skipSundayProcessing,
     activeSaturdayRequirement.enabled,
-    activeSaturdayRequirement.minTotalStaff,
     dates,
     masterData,
     month,
@@ -1051,6 +1051,9 @@ export default function HomePage() {
   }
 
   function setStaffShiftForDate(date: string, staffName: string, nextShiftType: string): void {
+    if (!sundayShiftInputEnabled && isSundayDate(date)) {
+      return;
+    }
     setCells((prev) => {
       const nextCells = { ...prev };
       let existingClassGroup: ShiftClassGroup = "0-1";
@@ -1102,6 +1105,7 @@ export default function HomePage() {
   const compactHeadCellClass = "px-2 py-1.5";
   const compactBodyCellClass = "px-2 py-1.5";
   const compactSelectClass = "w-full rounded bg-white px-1.5 py-1 text-center text-xs outline-none focus:bg-orange-50";
+  const sundayRowClass = "bg-gray-200/70";
 
   useEffect(() => {
     const updateTopScrollWidth = (): void => {
@@ -1603,6 +1607,7 @@ export default function HomePage() {
       );
       const targetByDate = new Map<string, number>();
       const remainingByDate = new Map<string, number>();
+      const overflowRemainingByDate = new Map<string, number>();
       const compensatoryQuotaByDate = new Map<string, number>();
 
       let createdCount = 0;
@@ -1638,16 +1643,33 @@ export default function HomePage() {
       const earlyShift = shiftTypesByStart[0] ?? shiftColumns[0]?.shiftType ?? "";
       const lateShift = shiftTypesByStart[shiftTypesByStart.length - 1] ?? shiftColumns[0]?.shiftType ?? "";
       const middleShift = shiftTypesByStart[Math.floor(shiftTypesByStart.length / 2)] ?? earlyShift;
+      const shiftTypeCoversTime = (shiftType: string, time: string): boolean => {
+        const pattern = shiftPatternByCode.get(shiftType);
+        if (!pattern) {
+          return false;
+        }
+        const targetMinutes = timeToMinutes(time);
+        const startMinutes = timeToMinutes(pattern.startTime);
+        const endMinutes = timeToMinutes(pattern.endTime);
+        return targetMinutes >= startMinutes && targetMinutes < endMinutes;
+      };
       const findAssignableSlot = (
         date: string,
         staffName: string,
-        preferredShiftType?: string
+        preferredShiftType?: string,
+        requiredTime?: string
       ): { classGroup: ShiftClassGroup; column: ShiftColumn } | null => {
+        const columnsByRequiredTime = requiredTime
+          ? shiftColumns.filter((column) => shiftTypeCoversTime(column.shiftType, requiredTime))
+          : shiftColumns;
         const preferredColumns = preferredShiftType
-          ? shiftColumns.filter((column) => column.shiftType === preferredShiftType)
+          ? columnsByRequiredTime.filter((column) => column.shiftType === preferredShiftType)
           : [];
-        const fallbackColumns = shiftColumns.filter((column) => !preferredColumns.some((item) => item.id === column.id));
+        const fallbackColumns = columnsByRequiredTime.filter((column) => !preferredColumns.some((item) => item.id === column.id));
         const orderedColumns = [...preferredColumns, ...fallbackColumns];
+        if (orderedColumns.length === 0) {
+          return null;
+        }
         const requiredByTime = effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
         const currentCounts = assignedCountByTimeForDate(nextCells, date);
         const shortages = requiredByTime.map((required, index) => Math.max(0, required - (currentCounts[index] ?? 0)));
@@ -1706,6 +1728,7 @@ export default function HomePage() {
         if (skipSundayProcessing && isSundayDate(date)) {
           targetByDate.set(date, 0);
           remainingByDate.set(date, 0);
+          overflowRemainingByDate.set(date, 0);
           compensatoryQuotaByDate.set(date, 0);
           appendLog("info", "capacity", `${date}: 日曜除外ルールにより処理対象外`);
           continue;
@@ -1723,7 +1746,8 @@ export default function HomePage() {
         const targetCount = Math.max(1, Math.min(requiredForDate, slotCapacityPerDate));
         const maxAssignableCount = Math.max(0, Math.min(availableCount, slotCapacityPerDate));
         targetByDate.set(date, targetCount);
-        remainingByDate.set(date, maxAssignableCount);
+        remainingByDate.set(date, targetCount);
+        overflowRemainingByDate.set(date, Math.max(0, maxAssignableCount - targetCount));
         compensatoryQuotaByDate.set(date, Math.max(0, maxAssignableCount - targetCount));
         if (maxAssignableCount < requiredForDate) {
           appendLog(
@@ -1757,8 +1781,16 @@ export default function HomePage() {
           let guard = 0;
           while ((remainingByDate.get(date) ?? 0) > 0 && phaseAssigned < phaseMaxAssignments && guard < slotCapacityPerDate * 2) {
             guard += 1;
-            const hasTimeShortage = shortageItemsForCells(nextCells).some((item) => item.date === date);
-            if (!hasTimeShortage) {
+            const shortagesForDate = shortageItemsForCells(nextCells)
+              .filter((item) => item.date === date)
+              .sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
+            if (shortagesForDate.length === 0) {
+              break;
+            }
+            const highestPriorityShortageTime = shortagesForDate[0]?.time;
+            const assignedCountForDate = (assignedByDate.get(date) ?? new Set<string>()).size;
+            const targetCountForDate = targetByDate.get(date) ?? 0;
+            if (assignedCountForDate >= targetCountForDate) {
               break;
             }
             const assignedNames = assignedByDate.get(date) ?? new Set<string>();
@@ -1790,7 +1822,7 @@ export default function HomePage() {
             })[0];
 
             const preferredShift = preferredShiftResolver(selectedName);
-            const targetSlot = findAssignableSlot(date, selectedName, preferredShift);
+            const targetSlot = findAssignableSlot(date, selectedName, preferredShift, highestPriorityShortageTime);
             if (!targetSlot) {
               const nextCandidates = availableCandidates.filter((name) => name !== selectedName);
               if (nextCandidates.length === 0) {
@@ -1892,7 +1924,7 @@ export default function HomePage() {
           if (weekday !== 6) {
             continue;
           }
-          const saturdayStaff = Array.from(assignedByDate.get(date) ?? []);
+          const saturdayStaff = Array.from(assignedByDate.get(date) ?? []).filter((staffName) => fullTimeSet.has(staffName));
           const unresolvedStaffNames: string[] = [];
           for (const staffName of saturdayStaff) {
             const weekDates = weekDatesForSaturday(date).filter((candidateDate) => candidateDate !== date);
@@ -2008,6 +2040,14 @@ export default function HomePage() {
               }）`
             );
           }
+          const saturdayPartTimeCount = Array.from(assignedByDate.get(date) ?? []).filter((staffName) => !fullTimeSet.has(staffName)).length;
+          if (saturdayPartTimeCount > 0) {
+            appendLog(
+              "info",
+              "compensatory-holiday",
+              `${date}: パート ${saturdayPartTimeCount} 名は振替休日対象外（週勤務回数ルールのみ適用）`
+            );
+          }
         }
       }
       pushSnapshot("compensatory", "振替休日反映", "同週振替ルールの反映後");
@@ -2020,6 +2060,79 @@ export default function HomePage() {
         (date) => targetByDate.get(date) ?? 0
       );
       pushSnapshot("step-7b", "最終再調整", "振替後の不足再調整");
+
+      // 通常フェーズでは日ごとの必要人数を上限に抑える。
+      // それでも時間帯不足が残る日だけ、例外的に追加配置（超過）を許可する。
+      appendLog("info", "step-7b", "例外調整: 時間帯不足が残る日のみ必要人数を超える配置を検討");
+      for (const date of dates) {
+        if (skipSundayProcessing && isSundayDate(date)) {
+          continue;
+        }
+        let guard = 0;
+        while ((overflowRemainingByDate.get(date) ?? 0) > 0 && guard < slotCapacityPerDate * 2) {
+          guard += 1;
+          const shortagesForDate = shortageItemsForCells(nextCells)
+            .filter((item) => item.date === date)
+            .sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
+          if (shortagesForDate.length === 0) {
+            break;
+          }
+          const highestPriorityShortageTime = shortagesForDate[0]?.time;
+          const assignedNames = assignedByDate.get(date) ?? new Set<string>();
+          const availableCandidates = staffPool
+            .filter((name) => !assignedNames.has(name))
+            .filter((name) => !nextOffByDateAndStaff[`${date}|${name}`])
+            .filter((name) => shiftColumns.some((column) => canWorkOnShift(date, column.shiftType, name)))
+            .filter((name) => {
+              if (!highestPriorityShortageTime) {
+                return true;
+              }
+              return shiftColumns.some(
+                (column) => canWorkOnShift(date, column.shiftType, name) && shiftTypeCoversTime(column.shiftType, highestPriorityShortageTime)
+              );
+            });
+          if (availableCandidates.length === 0) {
+            break;
+          }
+
+          const sortedCandidates = [...availableCandidates].sort((a, b) => {
+            const aCount = assignmentCountByStaff.get(a) ?? 0;
+            const bCount = assignmentCountByStaff.get(b) ?? 0;
+            if (aCount !== bCount) {
+              return aCount - bCount;
+            }
+            return a.localeCompare(b, "ja");
+          });
+          let selectedName = "";
+          let targetSlot: { classGroup: ShiftClassGroup; column: ShiftColumn } | null = null;
+          for (const candidateName of sortedCandidates) {
+            const candidateSlot = findAssignableSlot(date, candidateName, middleShift, highestPriorityShortageTime);
+            if (candidateSlot) {
+              selectedName = candidateName;
+              targetSlot = candidateSlot;
+              break;
+            }
+          }
+          if (!targetSlot) {
+            break;
+          }
+
+          nextCells[keyOf(date, targetSlot.column.id, targetSlot.classGroup)] = selectedName;
+          assignedNames.add(selectedName);
+          assignedByDate.set(date, assignedNames);
+          incrementFullTimeShiftUsage(selectedName, targetSlot.column.shiftType);
+          overflowRemainingByDate.set(date, Math.max(0, (overflowRemainingByDate.get(date) ?? 0) - 1));
+          createdCount += 1;
+          const nextCount = (assignmentCountByStaff.get(selectedName) ?? 0) + 1;
+          assignmentCountByStaff.set(selectedName, nextCount);
+          appendLog(
+            "warn",
+            "step-7b",
+            `${date} ${targetSlot.column.shiftType}: 時間帯不足解消のため ${selectedName} を例外追加（必要人数超過を許容）`
+          );
+        }
+      }
+      pushSnapshot("step-7c", "時間帯不足の例外調整", "必要人数超過を抑えつつ不足解消を優先");
 
       for (const date of dates) {
         if (skipSundayProcessing && isSundayDate(date)) {
@@ -2361,7 +2474,7 @@ export default function HomePage() {
 
         <section className="rounded-xl bg-white p-4 shadow-sm">
           <p className="text-sm text-orange-700">
-            必要先生人数の判定は日付ごと（曜日別）に行います。土曜日は土曜ルールの必要人数を適用します。
+            必要先生人数は、時間帯チェックは対人数ベース、日次人数チェックは曜日別で判定します。土曜日ルールは日次人数の下限として適用します。
           </p>
           <p className="mt-1 text-sm text-orange-800">
             土曜日の必要人数:{" "}
@@ -2477,13 +2590,23 @@ export default function HomePage() {
                   <tbody>
                     {dates.map((date) => {
                       const weekday = weekdayFromDateText(date);
+                      const isDisabledSunday = !sundayShiftInputEnabled && weekday === 0;
                       const dateText = `${dayLabelFromDateText(date)} (${WEEKDAY_LABELS[weekday]})`;
-                      const dateTextClass = weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
+                      const dateTextClass =
+                        weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
 
                       const classRows = SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => (
-                        <tr key={`${date}-${classGroup.key}`} className={classIndex === 0 ? "h-9 border-t-2 border-orange-200" : "h-9"}>
+                        <tr
+                          key={`${date}-${classGroup.key}`}
+                          className={`${classIndex === 0 ? "h-9 border-t-2 border-orange-200" : "h-9"} ${isDisabledSunday ? sundayRowClass : ""}`}
+                        >
                           {classIndex === 0 ? (
-                          <td rowSpan={DATE_GROUP_ROW_COUNT} className={`${compactBodyCellClass} text-center align-middle ${dateTextClass}`}>
+                          <td
+                            rowSpan={DATE_GROUP_ROW_COUNT}
+                            className={`${compactBodyCellClass} text-center align-middle ${dateTextClass} ${
+                              isDisabledSunday ? "bg-white" : ""
+                            }`}
+                          >
                               {dateText}
                             </td>
                           ) : null}
@@ -2496,8 +2619,9 @@ export default function HomePage() {
                             return (
                               <td key={`${classGroup.key}-${column.id}`} className={`p-1 text-center align-middle ${bodyStripeClass(columnIndex)}`}>
                                 <select
-                                  className={compactSelectClass}
+                                  className={`${compactSelectClass} ${isDisabledSunday ? "cursor-not-allowed bg-gray-100 text-gray-500" : ""}`}
                                   value={currentValue}
+                                  disabled={isDisabledSunday}
                                   onChange={(event) =>
                                     setCells((prev) => ({
                                       ...prev,
@@ -2520,7 +2644,10 @@ export default function HomePage() {
                       ));
 
                       const totalRow = (
-                        <tr key={`${date}-total`} className="h-9 border-b-2 border-orange-200 bg-orange-100/40">
+                        <tr
+                          key={`${date}-total`}
+                          className={`h-9 border-b-2 border-orange-200 ${isDisabledSunday ? sundayRowClass : "bg-orange-100/40"}`}
+                        >
                           <td className={`whitespace-nowrap font-semibold text-orange-900 ${compactBodyCellClass}`}>合計（対人数）</td>
                           {shiftColumns.map((column, columnIndex) => (
                             <td
@@ -2625,8 +2752,9 @@ export default function HomePage() {
                         </td>
                       ))}
                     </tr>
-                    {dates.flatMap((date) =>
-                      [
+                    {dates.flatMap((date) => {
+                      const isDisabledSunday = !sundayShiftInputEnabled && weekdayFromDateText(date) === 0;
+                      return [
                         ...SHIFT_CLASS_GROUPS.map((classGroup, classIndex) => {
                           const counts = assignedStaffCountByDateAndClass.get(`${date}|${classGroup.key}`) ?? REQUIRED_STAFF_TIMES.map(() => 0);
                           return (
@@ -2657,8 +2785,11 @@ export default function HomePage() {
                                   )}`}
                                 >
                                   <textarea
-                                    className="mx-auto h-24 w-44 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                                    className={`mx-auto h-24 w-44 resize-y rounded px-2 py-1 text-xs ${
+                                      isDisabledSunday ? "cursor-not-allowed bg-gray-100 text-gray-500" : "bg-white text-orange-900"
+                                    }`}
                                     value={eventByDate[date] ?? ""}
+                                    disabled={isDisabledSunday}
                                     onChange={(event) =>
                                       setEventByDate((prev) => ({
                                         ...prev,
@@ -2676,8 +2807,11 @@ export default function HomePage() {
                                   )}`}
                                 >
                                   <textarea
-                                    className="mx-auto h-24 w-56 resize-y rounded bg-white px-2 py-1 text-xs text-orange-900"
+                                    className={`mx-auto h-24 w-56 resize-y rounded px-2 py-1 text-xs ${
+                                      isDisabledSunday ? "cursor-not-allowed bg-gray-100 text-gray-500" : "bg-white text-orange-900"
+                                    }`}
                                     value={noteByDate[date] ?? ""}
+                                    disabled={isDisabledSunday}
                                     onChange={(event) =>
                                       setNoteByDate((prev) => ({
                                         ...prev,
@@ -2690,7 +2824,10 @@ export default function HomePage() {
                             </tr>
                           );
                         }),
-                        <tr key={`assigned-${date}-total`} className="h-9 border-b-2 border-orange-200 bg-orange-100/40">
+                        <tr
+                          key={`assigned-${date}-total`}
+                          className={`h-9 border-b-2 border-orange-200 ${isDisabledSunday ? sundayRowClass : "bg-orange-100/40"}`}
+                        >
                           {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
                             <td
                               key={`${date}-total-${REQUIRED_STAFF_TIMES[columnIndex]}`}
@@ -2704,8 +2841,8 @@ export default function HomePage() {
                             </td>
                           ))}
                         </tr>
-                      ]
-                    )}
+                      ];
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2735,13 +2872,22 @@ export default function HomePage() {
                   <tbody>
                     {dates.map((date) => {
                       const weekday = weekdayFromDateText(date);
+                      const isDisabledSunday = !sundayShiftInputEnabled && weekday === 0;
                       const dateText = `${dayLabelFromDateText(date)} (${WEEKDAY_LABELS[weekday]})`;
-                      const dateTextClass = weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
+                      const dateTextClass =
+                        weekday === 0 ? "text-red-600" : weekday === 6 ? "text-blue-600" : "text-orange-900";
                       const rowMap = shiftCodesByDateAndStaff.get(date) ?? new Map<string, string>();
                       const assignmentMap = primaryAssignmentByDateAndStaff.get(date) ?? new Map<string, { shiftType: string; classGroup: ShiftClassGroup; count: number }>();
                       return (
-                        <tr key={`staff-view-${date}`} className="h-9 border-t border-orange-100 odd:bg-orange-50/30">
-                          <td className={`h-9 w-20 min-w-20 whitespace-nowrap ${compactBodyCellClass} text-center align-middle font-semibold ${dateTextClass}`}>
+                        <tr
+                          key={`staff-view-${date}`}
+                          className={`h-9 border-t border-orange-100 odd:bg-orange-50/30 ${isDisabledSunday ? sundayRowClass : ""}`}
+                        >
+                          <td
+                            className={`h-9 w-20 min-w-20 whitespace-nowrap ${compactBodyCellClass} text-center align-middle font-semibold ${dateTextClass} ${
+                              isDisabledSunday ? "bg-white" : ""
+                            }`}
+                          >
                             {dateText}
                           </td>
                           {allStaffNames.map((name, index) => {
@@ -2757,8 +2903,11 @@ export default function HomePage() {
                                 className={`h-9 w-16 min-w-16 whitespace-nowrap px-1 py-1 text-center align-middle text-orange-900 ${bodyStripeClass(index)}`}
                               >
                                 <select
-                                  className="h-7 w-full rounded bg-white px-1 py-0.5 text-center text-[11px] outline-none focus:bg-orange-50"
+                                  className={`h-7 w-full rounded px-1 py-0.5 text-center text-[11px] outline-none ${
+                                    isDisabledSunday ? "cursor-not-allowed bg-gray-100 text-gray-500" : "bg-white focus:bg-orange-50"
+                                  }`}
                                   value={currentShiftType}
+                                  disabled={isDisabledSunday}
                                   onChange={(event) => setStaffShiftForDate(date, name, event.target.value)}
                                 >
                                   <option value="" />
@@ -2871,7 +3020,12 @@ export default function HomePage() {
                       ))}
                     </tr>
                     {dates.map((date) => (
-                      <tr key={`staff-total-${date}`} className="h-9 border-t border-orange-100 odd:bg-orange-50/30">
+                      <tr
+                        key={`staff-total-${date}`}
+                        className={`h-9 border-t border-orange-100 odd:bg-orange-50/30 ${
+                          !sundayShiftInputEnabled && weekdayFromDateText(date) === 0 ? sundayRowClass : ""
+                        }`}
+                      >
                         {(assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)).map((count, columnIndex) => (
                           <td
                             key={`staff-total-${date}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
@@ -2897,8 +3051,13 @@ export default function HomePage() {
                           )}`}
                         >
                           <textarea
-                            className="mx-auto h-6 w-44 resize-none rounded bg-white px-2 py-0.5 text-xs leading-tight text-orange-900"
+                            className={`mx-auto h-6 w-44 resize-none rounded px-2 py-0.5 text-xs leading-tight ${
+                              !sundayShiftInputEnabled && weekdayFromDateText(date) === 0
+                                ? "cursor-not-allowed bg-gray-100 text-gray-500"
+                                : "bg-white text-orange-900"
+                            }`}
                             value={eventByDate[date] ?? ""}
+                            disabled={!sundayShiftInputEnabled && weekdayFromDateText(date) === 0}
                             onChange={(event) =>
                               setEventByDate((prev) => ({
                                 ...prev,
@@ -2913,8 +3072,13 @@ export default function HomePage() {
                           )}`}
                         >
                           <textarea
-                            className="mx-auto h-6 w-56 resize-none rounded bg-white px-2 py-0.5 text-xs leading-tight text-orange-900"
+                            className={`mx-auto h-6 w-56 resize-none rounded px-2 py-0.5 text-xs leading-tight ${
+                              !sundayShiftInputEnabled && weekdayFromDateText(date) === 0
+                                ? "cursor-not-allowed bg-gray-100 text-gray-500"
+                                : "bg-white text-orange-900"
+                            }`}
                             value={noteByDate[date] ?? ""}
+                            disabled={!sundayShiftInputEnabled && weekdayFromDateText(date) === 0}
                             onChange={(event) =>
                               setNoteByDate((prev) => ({
                                 ...prev,

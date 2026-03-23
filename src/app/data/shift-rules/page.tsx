@@ -53,6 +53,10 @@ function normalizeShiftRulesForForm(input: ShiftRules | undefined): ShiftRules {
     autoGenerationPolicy: {
       ...defaults.autoGenerationPolicy,
       ...input.autoGenerationPolicy,
+      sundayChildcareEnabled:
+        typeof input.autoGenerationPolicy?.sundayChildcareEnabled === "boolean"
+          ? input.autoGenerationPolicy.sundayChildcareEnabled
+          : defaults.autoGenerationPolicy.sundayChildcareEnabled,
     },
   };
 }
@@ -732,18 +736,20 @@ export default function ShiftRulesPage() {
             <input
               className="orange-checkbox"
               type="checkbox"
-              checked={rules.autoGenerationPolicy.skipSundayProcessing}
+              checked={Boolean(rules.autoGenerationPolicy.sundayChildcareEnabled)}
               disabled={!editable}
-              onChange={(event) =>
+              onChange={(event) => {
+                const sundayChildcareEnabled = event.target.checked;
                 patchRules({
                   autoGenerationPolicy: {
                     ...rules.autoGenerationPolicy,
-                    skipSundayProcessing: event.target.checked,
+                    sundayChildcareEnabled,
+                    skipSundayProcessing: !sundayChildcareEnabled,
                   },
-                })
-              }
+                });
+              }}
             />
-            日曜日は処理対象から除外する（必要人数計算・自動作成・判定）
+            日曜保育を実施する
           </label>
           <label className="flex items-center gap-2 text-sm text-orange-800">
             <input
