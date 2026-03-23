@@ -89,6 +89,10 @@ function isSundayDate(date: string): boolean {
   return new Date(`${date}T00:00:00`).getDay() === 0;
 }
 
+function isSaturdayDate(date: string): boolean {
+  return new Date(`${date}T00:00:00`).getDay() === 6;
+}
+
 function ageAtMonthStart(birthDate: string, month: string): number | null {
   if (!birthDate) {
     return null;
@@ -264,7 +268,8 @@ export default function HomePage() {
   const [requiredOverrideByTime, setRequiredOverrideByTime] = useState<Record<string, number>>({});
   const [requiredSaturdayOverrideByTime, setRequiredSaturdayOverrideByTime] = useState<Record<string, number>>({});
   const [showResetRequiredModal, setShowResetRequiredModal] = useState(false);
-  const [viewMode, setViewMode] = useState<"class" | "staff">("class");
+  const [viewMode, setViewMode] = useState<"class" | "staff" | "daily">("class");
+  const [dailyViewDate, setDailyViewDate] = useState("");
   const [eventByDate, setEventByDate] = useState<Record<string, string>>({});
   const [noteByDate, setNoteByDate] = useState<Record<string, string>>({});
   const [plannerStep, setPlannerStep] = useState<PlannerStep>(1);
@@ -285,6 +290,17 @@ export default function HomePage() {
   const syncingScrollFrom = useRef<"top" | "bottom" | null>(null);
 
   const dates = useMemo(() => monthToDates(month), [month]);
+  useEffect(() => {
+    if (dates.length === 0) {
+      if (dailyViewDate) {
+        setDailyViewDate("");
+      }
+      return;
+    }
+    if (!dailyViewDate || !dates.includes(dailyViewDate)) {
+      setDailyViewDate(dates[0]);
+    }
+  }, [dailyViewDate, dates]);
   const shiftPatterns = useMemo(() => masterData?.shiftPatterns ?? [], [masterData]);
   const allShiftTypes = useMemo(() => {
     const values = shiftPatterns.map((pattern) => pattern.code.trim()).filter((code) => code.length > 0);
@@ -736,6 +752,188 @@ export default function HomePage() {
     return result;
   }, [cells, dates, shiftColumns]);
 
+  const assignedShiftTypesByDateAndStaff = useMemo(() => {
+    const result = new Map<string, Map<string, string[]>>();
+    for (const date of dates) {
+      const shiftSetByName = new Map<string, Set<string>>();
+      for (const classGroup of SHIFT_CLASS_GROUPS) {
+        for (const column of shiftColumns) {
+          const staffName = (cells[keyOf(date, column.id, classGroup.key)] ?? "").trim();
+          if (!staffName) {
+            continue;
+          }
+          if (!shiftSetByName.has(staffName)) {
+            shiftSetByName.set(staffName, new Set<string>());
+          }
+          shiftSetByName.get(staffName)?.add(column.shiftType);
+        }
+      }
+      const shiftTypesByName = new Map<string, string[]>();
+      shiftSetByName.forEach((codes, name) => {
+        const orderedCodes = Array.from(codes).sort((a, b) => {
+          const aStart = timeToMinutes(shiftPatternByCode.get(a)?.startTime ?? "23:59");
+          const bStart = timeToMinutes(shiftPatternByCode.get(b)?.startTime ?? "23:59");
+          if (aStart !== bStart) {
+            return aStart - bStart;
+          }
+          return a.localeCompare(b, "ja");
+        });
+        shiftTypesByName.set(name, orderedCodes);
+      });
+      result.set(date, shiftTypesByName);
+    }
+    return result;
+  }, [cells, dates, shiftColumns, shiftPatternByCode]);
+
+  const dailyTimelineTimes = useMemo(() => {
+    const usedShiftTypes = Array.from(new Set(shiftColumns.map((column) => column.shiftType)));
+    const minuteRanges = usedShiftTypes
+      .map((shiftType) => shiftPatternByCode.get(shiftType))
+      .filter((pattern): pattern is NonNullable<typeof pattern> => Boolean(pattern))
+      .map((pattern) => ({
+        start: timeToMinutes(pattern.startTime),
+        end: timeToMinutes(pattern.endTime)
+      }))
+      .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start);
+
+    const formatMinutes = (minutes: number): string => {
+      const h = Math.floor(minutes / 60);
+      const m = minutes % 60;
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    };
+
+    const minuteSet = new Set<number>(REQUIRED_STAFF_TIMES.map((time) => timeToMinutes(time)));
+    if (minuteRanges.length > 0) {
+      const minStart = Math.min(...minuteRanges.map((item) => item.start));
+      const maxEnd = Math.max(...minuteRanges.map((item) => item.end));
+      const alignedStart = Math.floor(minStart / 30) * 30;
+      const alignedEnd = Math.ceil(maxEnd / 30) * 30;
+      for (let current = alignedStart; current < alignedEnd; current += 30) {
+        minuteSet.add(current);
+      }
+    }
+    return Array.from(minuteSet)
+      .sort((a, b) => a - b)
+      .map((minutes) => formatMinutes(minutes));
+  }, [shiftColumns, shiftPatternByCode]);
+
+  const dailyRowsByDate = useMemo(() => {
+    const result = new Map<
+      string,
+      {
+        name: string;
+        shiftText: string;
+        timeText: string;
+        timelineShiftTypes: string[];
+        isOff: boolean;
+        hasAssignment: boolean;
+      }[]
+    >();
+
+    for (const date of dates) {
+      const shiftTypesByName = assignedShiftTypesByDateAndStaff.get(date) ?? new Map<string, string[]>();
+      const rows = allStaffNames.map((name) => {
+        const shiftTypes = shiftTypesByName.get(name) ?? [];
+        const isOff = offByDateAndStaff[`${date}|${name}`] === true;
+        if (shiftTypes.length === 0) {
+          return {
+            name,
+            shiftText: isOff ? "休み" : "",
+            timeText: isOff ? "ー" : "",
+            timelineShiftTypes: [],
+            isOff,
+            hasAssignment: false
+          };
+        }
+
+        const ranges = shiftTypes
+          .map((shiftType) => shiftPatternByCode.get(shiftType))
+          .filter((pattern): pattern is NonNullable<typeof pattern> => Boolean(pattern));
+        const starts = ranges.map((pattern) => timeToMinutes(pattern.startTime));
+        const ends = ranges.map((pattern) => timeToMinutes(pattern.endTime));
+        const minStart = starts.length > 0 ? Math.min(...starts) : null;
+        const maxEnd = ends.length > 0 ? Math.max(...ends) : null;
+        const timeText =
+          minStart !== null && maxEnd !== null
+            ? `${String(Math.floor(minStart / 60)).padStart(2, "0")}:${String(minStart % 60).padStart(2, "0")} - ${String(
+                Math.floor(maxEnd / 60)
+              ).padStart(2, "0")}:${String(maxEnd % 60).padStart(2, "0")}`
+            : "";
+
+        return {
+          name,
+          shiftText: shiftTypes.join(" / "),
+          timeText,
+          timelineShiftTypes: shiftTypes,
+          isOff,
+          hasAssignment: true
+        };
+      });
+
+      rows.sort((a, b) => {
+        if (a.hasAssignment !== b.hasAssignment) {
+          return a.hasAssignment ? -1 : 1;
+        }
+        if (a.isOff !== b.isOff) {
+          return a.isOff ? 1 : -1;
+        }
+        const aStart = a.timelineShiftTypes.length
+          ? Math.min(...a.timelineShiftTypes.map((code) => timeToMinutes(shiftPatternByCode.get(code)?.startTime ?? "23:59")))
+          : Number.MAX_SAFE_INTEGER;
+        const bStart = b.timelineShiftTypes.length
+          ? Math.min(...b.timelineShiftTypes.map((code) => timeToMinutes(shiftPatternByCode.get(code)?.startTime ?? "23:59")))
+          : Number.MAX_SAFE_INTEGER;
+        if (aStart !== bStart) {
+          return aStart - bStart;
+        }
+        return a.name.localeCompare(b.name, "ja");
+      });
+      result.set(date, rows);
+    }
+
+    return result;
+  }, [allStaffNames, assignedShiftTypesByDateAndStaff, dates, offByDateAndStaff, shiftPatternByCode]);
+
+  const dailyCoverageByDate = useMemo(() => {
+    const result = new Map<string, Map<string, { required: number | null; assigned: number }>>();
+    for (const date of dates) {
+      const requiredByTime = new Map<string, number>();
+      REQUIRED_STAFF_TIMES.forEach((time, index) => {
+        const requiredCounts = effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
+        requiredByTime.set(time, requiredCounts[index] ?? 0);
+      });
+
+      const coverageByTime = new Map<string, { required: number | null; assigned: number }>();
+      for (const time of dailyTimelineTimes) {
+        const targetMinutes = timeToMinutes(time);
+        const presentStaff = new Set<string>();
+        for (const classGroup of SHIFT_CLASS_GROUPS) {
+          for (const column of shiftColumns) {
+            const staffName = (cells[keyOf(date, column.id, classGroup.key)] ?? "").trim();
+            if (!staffName) {
+              continue;
+            }
+            const pattern = shiftPatternByCode.get(column.shiftType);
+            if (!pattern) {
+              continue;
+            }
+            const startMinutes = timeToMinutes(pattern.startTime);
+            const endMinutes = timeToMinutes(pattern.endTime);
+            if (targetMinutes >= startMinutes && targetMinutes < endMinutes) {
+              presentStaff.add(staffName);
+            }
+          }
+        }
+        coverageByTime.set(time, {
+          required: requiredByTime.has(time) ? requiredByTime.get(time) ?? 0 : null,
+          assigned: presentStaff.size
+        });
+      }
+      result.set(date, coverageByTime);
+    }
+    return result;
+  }, [cells, dates, dailyTimelineTimes, effectiveRequiredStaffCountByDate, shiftColumns, shiftPatternByCode]);
+
   const loadMonth = useCallback(async () => {
     setLoadingData(true);
     try {
@@ -1099,6 +1297,42 @@ export default function HomePage() {
   function resetRequiredStaffToCalculated(): void {
     setRequiredOverrideByTime({});
     setRequiredSaturdayOverrideByTime({});
+  }
+
+  function fillEmptyCellsWithOff(): void {
+    if (allStaffNames.length === 0 || dates.length === 0) {
+      showToast("対象データがありません");
+      return;
+    }
+
+    const nextOffByDateAndStaff = { ...offByDateAndStaff };
+    let filledCount = 0;
+
+    for (const date of dates) {
+      if (!sundayShiftInputEnabled && isSundayDate(date)) {
+        continue;
+      }
+      const assignedByName = assignedStaffCountByDateAndName.get(date) ?? new Map<string, number>();
+      for (const name of allStaffNames) {
+        const recordKey = `${date}|${name}`;
+        if (nextOffByDateAndStaff[recordKey]) {
+          continue;
+        }
+        if ((assignedByName.get(name) ?? 0) > 0) {
+          continue;
+        }
+        nextOffByDateAndStaff[recordKey] = true;
+        filledCount += 1;
+      }
+    }
+
+    if (filledCount === 0) {
+      showToast("空きマスはありませんでした");
+      return;
+    }
+
+    setOffByDateAndStaff(nextOffByDateAndStaff);
+    showToast(`空きマス ${filledCount} 件を休みに設定しました`);
   }
 
   const compactClass = "text-[12px]";
@@ -1599,6 +1833,7 @@ export default function HomePage() {
       };
 
       const assignmentCountByStaff = new Map(staffPool.map((name) => [name, 0]));
+      const saturdayAssignmentCountByStaff = new Map(staffPool.map((name) => [name, 0]));
       const assignedByDate = new Map<string, Set<string>>(dates.map((date) => [date, new Set<string>()]));
       const slotCapacityPerDate = shiftColumns.length * SHIFT_CLASS_GROUPS.length;
       const requiredPeak = Math.max(
@@ -1643,6 +1878,19 @@ export default function HomePage() {
       const earlyShift = shiftTypesByStart[0] ?? shiftColumns[0]?.shiftType ?? "";
       const lateShift = shiftTypesByStart[shiftTypesByStart.length - 1] ?? shiftColumns[0]?.shiftType ?? "";
       const middleShift = shiftTypesByStart[Math.floor(shiftTypesByStart.length / 2)] ?? earlyShift;
+      const shiftStartOrder = new Map(shiftTypesByStart.map((shiftType, index) => [shiftType, index]));
+      const sortedShiftColumns = [...shiftColumns].sort((a, b) => {
+        const aIndex = shiftStartOrder.get(a.shiftType) ?? Number.MAX_SAFE_INTEGER;
+        const bIndex = shiftStartOrder.get(b.shiftType) ?? Number.MAX_SAFE_INTEGER;
+        if (aIndex !== bIndex) {
+          return aIndex - bIndex;
+        }
+        return a.id.localeCompare(b.id, "ja");
+      });
+      const baseDateIndexByDate = new Map(dates.map((date, index) => [date, index]));
+      const orderedCandidatesByDate = (candidates: string[]): string[] => {
+        return [...candidates];
+      };
       const shiftTypeCoversTime = (shiftType: string, time: string): boolean => {
         const pattern = shiftPatternByCode.get(shiftType);
         if (!pattern) {
@@ -1660,8 +1908,8 @@ export default function HomePage() {
         requiredTime?: string
       ): { classGroup: ShiftClassGroup; column: ShiftColumn } | null => {
         const columnsByRequiredTime = requiredTime
-          ? shiftColumns.filter((column) => shiftTypeCoversTime(column.shiftType, requiredTime))
-          : shiftColumns;
+          ? sortedShiftColumns.filter((column) => shiftTypeCoversTime(column.shiftType, requiredTime))
+          : sortedShiftColumns;
         const preferredColumns = preferredShiftType
           ? columnsByRequiredTime.filter((column) => column.shiftType === preferredShiftType)
           : [];
@@ -1723,6 +1971,32 @@ export default function HomePage() {
         }
         return { classGroup: best.classGroup, column: best.column };
       };
+      const isEarlyShiftType = (shiftType: string): boolean => {
+        const pattern = shiftPatternByCode.get(shiftType);
+        if (!pattern) {
+          return false;
+        }
+        return timeToMinutes(pattern.startTime) <= timeToMinutes("08:30");
+      };
+      const wasAssignedEarlyShiftPreviousDate = (date: string, staffName: string): boolean => {
+        const dateIndex = baseDateIndexByDate.get(date) ?? -1;
+        if (dateIndex <= 0) {
+          return false;
+        }
+        const previousDate = dates[dateIndex - 1];
+        for (const classGroup of SHIFT_CLASS_GROUPS) {
+          for (const column of shiftColumns) {
+            const cellKey = keyOf(previousDate, column.id, classGroup.key);
+            if ((nextCells[cellKey] ?? "").trim() !== staffName) {
+              continue;
+            }
+            if (isEarlyShiftType(column.shiftType)) {
+              return true;
+            }
+          }
+        }
+        return false;
+      };
 
       for (const date of dates) {
         if (skipSundayProcessing && isSundayDate(date)) {
@@ -1769,7 +2043,8 @@ export default function HomePage() {
         ruleTitle: string,
         staffCandidates: string[],
         preferredShiftResolver: (name: string) => string,
-        maxAssignmentsPerDateResolver: (date: string) => number
+        maxAssignmentsPerDateResolver: (date: string) => number,
+        options?: { avoidConsecutiveEarly?: boolean }
       ): void => {
         appendLog("info", stepLabel, `${ruleTitle}: 割当フェーズを開始（候補 ${staffCandidates.length} 名）`);
         for (const date of dates) {
@@ -1803,34 +2078,50 @@ export default function HomePage() {
               break;
             }
 
-            const selectedName = [...availableCandidates].sort((a, b) => {
+            const staffOrder = orderedCandidatesByDate(staffCandidates).filter((name) => availableCandidates.includes(name));
+            const prioritizeSaturdayFairness = isSaturdayDate(date);
+            const sortedByWorkload = [...staffOrder].sort((a, b) => {
+              if (prioritizeSaturdayFairness) {
+                const aSaturdayCount = saturdayAssignmentCountByStaff.get(a) ?? 0;
+                const bSaturdayCount = saturdayAssignmentCountByStaff.get(b) ?? 0;
+                if (aSaturdayCount !== bSaturdayCount) {
+                  return aSaturdayCount - bSaturdayCount;
+                }
+              }
               const aCount = assignmentCountByStaff.get(a) ?? 0;
               const bCount = assignmentCountByStaff.get(b) ?? 0;
               if (aCount !== bCount) {
                 return aCount - bCount;
               }
-              if (preventFixedFullTimeShift) {
-                const aPreferredShift = preferredShiftResolver(a);
-                const bPreferredShift = preferredShiftResolver(b);
-                const aUsage = fullTimeSet.has(a) ? getFullTimeShiftUsageCount(a, aPreferredShift) : 0;
-                const bUsage = fullTimeSet.has(b) ? getFullTimeShiftUsageCount(b, bPreferredShift) : 0;
-                if (aUsage !== bUsage) {
-                  return aUsage - bUsage;
+              return 0;
+            });
+            const selectSlotFromCandidates = (
+              candidates: string[]
+            ): { selectedName: string; targetSlot: { classGroup: ShiftClassGroup; column: ShiftColumn } } | null => {
+              for (const candidate of candidates) {
+                const preferredShift = preferredShiftResolver(candidate);
+                const slot = findAssignableSlot(date, candidate, preferredShift, highestPriorityShortageTime);
+                if (!slot) {
+                  continue;
                 }
+                if (options?.avoidConsecutiveEarly && isEarlyShiftType(slot.column.shiftType) && wasAssignedEarlyShiftPreviousDate(date, candidate)) {
+                  continue;
+                }
+                return { selectedName: candidate, targetSlot: slot };
               }
-              return a.localeCompare(b, "ja");
-            })[0];
+              return null;
+            };
 
-            const preferredShift = preferredShiftResolver(selectedName);
-            const targetSlot = findAssignableSlot(date, selectedName, preferredShift, highestPriorityShortageTime);
-            if (!targetSlot) {
-              const nextCandidates = availableCandidates.filter((name) => name !== selectedName);
-              if (nextCandidates.length === 0) {
-                appendLog("warn", stepLabel, `${date}: 時間帯不足を埋める配置候補が見つからずフェーズを終了`);
-                break;
-              }
-              continue;
+            let selected = selectSlotFromCandidates(sortedByWorkload);
+            if (!selected && options?.avoidConsecutiveEarly) {
+              // Fall back: keep filling shortages even if early shifts become consecutive.
+              selected = selectSlotFromCandidates(staffOrder);
             }
+            if (!selected) {
+              appendLog("warn", stepLabel, `${date}: 時間帯不足を埋める配置候補が見つからずフェーズを終了`);
+              break;
+            }
+            const { selectedName, targetSlot } = selected;
 
             nextCells[keyOf(date, targetSlot.column.id, targetSlot.classGroup)] = selectedName;
             assignedNames.add(selectedName);
@@ -1841,6 +2132,9 @@ export default function HomePage() {
             createdCount += 1;
             const nextCount = (assignmentCountByStaff.get(selectedName) ?? 0) + 1;
             assignmentCountByStaff.set(selectedName, nextCount);
+            if (isSaturdayDate(date)) {
+              saturdayAssignmentCountByStaff.set(selectedName, (saturdayAssignmentCountByStaff.get(selectedName) ?? 0) + 1);
+            }
 
             const reasonParts = [
               `ルール=${ruleTitle}`,
@@ -1852,6 +2146,9 @@ export default function HomePage() {
             if (preventFixedFullTimeShift && fullTimeSet.has(selectedName)) {
               const shiftUsageCount = getFullTimeShiftUsageCount(selectedName, targetSlot.column.shiftType);
               reasonParts.push(`同シフト回数=${shiftUsageCount}回`);
+            }
+            if (isSaturdayDate(date)) {
+              reasonParts.push(`土曜回数=${saturdayAssignmentCountByStaff.get(selectedName) ?? 0}回`);
             }
             const weeklyDays = partByName.get(selectedName)?.weeklyDays;
             if (weeklyDays) {
@@ -1890,7 +2187,8 @@ export default function HomePage() {
         titleAt(3, "常勤の早番を入れる"),
         fullTimeNames,
         () => earlyShift,
-        (date) => Math.max(2, Math.ceil((targetByDate.get(date) ?? 0) * 0.35))
+        (date) => Math.max(2, Math.ceil((targetByDate.get(date) ?? 0) * 0.35)),
+        { avoidConsecutiveEarly: true }
       );
       pushSnapshot("step-4", "Step4 常勤早番配置", titleAt(3, "常勤の早番を入れる"));
       runAssignmentPhase(
@@ -1919,6 +2217,7 @@ export default function HomePage() {
       pushSnapshot("step-7", "Step7 常勤調整", titleAt(6, "常勤で調整する"));
 
       if (rules.compensatoryHoliday.enabled && rules.compensatoryHoliday.sameWeekRequired) {
+        const compensatoryLoadByDate = new Map<string, number>();
         for (const date of dates) {
           const weekday = new Date(`${date}T00:00:00`).getDay();
           if (weekday !== 6) {
@@ -1933,7 +2232,18 @@ export default function HomePage() {
                 const day = new Date(`${candidateDate}T00:00:00`).getDay();
                 return day >= 1 && day <= 5;
               })
-              .sort((a, b) => (remainingByDate.get(b) ?? 0) - (remainingByDate.get(a) ?? 0));
+              .sort((a, b) => {
+                const aLoad = compensatoryLoadByDate.get(a) ?? 0;
+                const bLoad = compensatoryLoadByDate.get(b) ?? 0;
+                if (aLoad !== bLoad) {
+                  return aLoad - bLoad;
+                }
+                const remainingDiff = (remainingByDate.get(b) ?? 0) - (remainingByDate.get(a) ?? 0);
+                if (remainingDiff !== 0) {
+                  return remainingDiff;
+                }
+                return a.localeCompare(b);
+              });
             let secured = false;
             for (const candidateDate of candidateDates) {
               const key = `${candidateDate}|${staffName}`;
@@ -1962,10 +2272,11 @@ export default function HomePage() {
                   }
                 }
                 substituteHolidayCount += 1;
+                compensatoryLoadByDate.set(candidateDate, (compensatoryLoadByDate.get(candidateDate) ?? 0) + 1);
                 appendLog(
                   "info",
                   "compensatory-holiday",
-                  `${staffName}: ${date} 土曜勤務の振替として ${candidateDate} を休みに設定（同週振替ルール / 日次余力を使用）`
+                  `${staffName}: ${date} 土曜勤務の振替として ${candidateDate} を休みに設定（同週振替ルール / 日次余力を使用 / 分散配置）`
                 );
                 secured = true;
                 break;
@@ -2017,10 +2328,11 @@ export default function HomePage() {
                 incrementFullTimeShiftUsage(replacementName, shiftType);
               }
               substituteHolidayCount += 1;
+              compensatoryLoadByDate.set(candidateDate, (compensatoryLoadByDate.get(candidateDate) ?? 0) + 1);
               appendLog(
                 "info",
                 "compensatory-holiday",
-                `${staffName}: ${date} 土曜勤務の振替として ${candidateDate} を休みに設定（${replacementName} が ${targetShiftType} を代替）`
+                `${staffName}: ${date} 土曜勤務の振替として ${candidateDate} を休みに設定（${replacementName} が ${targetShiftType} を代替 / 分散配置）`
               );
               secured = true;
               break;
@@ -2096,6 +2408,13 @@ export default function HomePage() {
           }
 
           const sortedCandidates = [...availableCandidates].sort((a, b) => {
+            if (isSaturdayDate(date)) {
+              const aSaturdayCount = saturdayAssignmentCountByStaff.get(a) ?? 0;
+              const bSaturdayCount = saturdayAssignmentCountByStaff.get(b) ?? 0;
+              if (aSaturdayCount !== bSaturdayCount) {
+                return aSaturdayCount - bSaturdayCount;
+              }
+            }
             const aCount = assignmentCountByStaff.get(a) ?? 0;
             const bCount = assignmentCountByStaff.get(b) ?? 0;
             if (aCount !== bCount) {
@@ -2125,10 +2444,15 @@ export default function HomePage() {
           createdCount += 1;
           const nextCount = (assignmentCountByStaff.get(selectedName) ?? 0) + 1;
           assignmentCountByStaff.set(selectedName, nextCount);
+          if (isSaturdayDate(date)) {
+            saturdayAssignmentCountByStaff.set(selectedName, (saturdayAssignmentCountByStaff.get(selectedName) ?? 0) + 1);
+          }
           appendLog(
             "warn",
             "step-7b",
-            `${date} ${targetSlot.column.shiftType}: 時間帯不足解消のため ${selectedName} を例外追加（必要人数超過を許容）`
+            `${date} ${targetSlot.column.shiftType}: 時間帯不足解消のため ${selectedName} を例外追加（必要人数超過を許容${
+              isSaturdayDate(date) ? ` / 土曜回数=${saturdayAssignmentCountByStaff.get(selectedName) ?? 0}回` : ""
+            }）`
           );
         }
       }
@@ -2492,7 +2816,7 @@ export default function HomePage() {
                 ? "Step3: イベント欄を入力してください。"
                 : plannerStep === 5
                   ? "Step5: 内容確認後に自動作成（下書き）を実行してください。"
-                  : "必要に応じてクラス別 / 先生別を切り替えて編集できます。"}
+                  : "必要に応じてクラス別 / 先生別 / 日別を切り替えて確認・編集できます。"}
           </p>
           <div className="mt-3 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -2513,13 +2837,29 @@ export default function HomePage() {
               >
                 先生別表示
               </button>
+              <button
+                className={`rounded-md px-3 py-1.5 text-sm font-semibold disabled:opacity-50 ${
+                  viewMode === "daily" ? "bg-orange-500 text-white" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
+                }`}
+                onClick={() => setViewMode("daily")}
+              >
+                日別表示
+              </button>
             </div>
-            <button
-              className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200"
-              onClick={() => setShowResetRequiredModal(true)}
-            >
-              必要人数リセット
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200"
+                onClick={() => fillEmptyCellsWithOff()}
+              >
+                空きマスを休みで埋める
+              </button>
+              <button
+                className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200"
+                onClick={() => setShowResetRequiredModal(true)}
+              >
+                必要人数リセット
+              </button>
+            </div>
           </div>
           <div className="mt-3 space-y-2">
             <div
@@ -2846,7 +3186,7 @@ export default function HomePage() {
                   </tbody>
                 </table>
               </div>
-              ) : (
+              ) : viewMode === "staff" ? (
               <div className="flex min-w-max items-start">
                 <table className={`min-w-max ${compactClass}`}>
                   <thead className="bg-orange-100/70">
@@ -2894,17 +3234,24 @@ export default function HomePage() {
                             const assignment = assignmentMap.get(name);
                             const offKey = `${date}|${name}`;
                             const currentShiftType = offByDateAndStaff[offKey] ? "__OFF__" : assignment?.shiftType ?? "";
+                            const isOffCell = currentShiftType === "__OFF__";
                             const selectable = selectableShiftTypesForStaffView.filter(
                               (shiftType) => shiftType === currentShiftType || canWorkOnShift(date, shiftType, name)
                             );
                             return (
                               <td
                                 key={`staff-view-${date}-${name}-${index}`}
-                                className={`h-9 w-16 min-w-16 whitespace-nowrap px-1 py-1 text-center align-middle text-orange-900 ${bodyStripeClass(index)}`}
+                                className={`h-9 w-16 min-w-16 whitespace-nowrap px-1 py-1 text-center align-middle text-orange-900 ${
+                                  isOffCell && !isDisabledSunday ? "bg-yellow-100" : bodyStripeClass(index)
+                                }`}
                               >
                                 <select
                                   className={`h-7 w-full rounded px-1 py-0.5 text-center text-[11px] outline-none ${
-                                    isDisabledSunday ? "cursor-not-allowed bg-gray-100 text-gray-500" : "bg-white focus:bg-orange-50"
+                                    isDisabledSunday
+                                      ? "cursor-not-allowed bg-gray-100 text-gray-500"
+                                      : isOffCell
+                                        ? "bg-yellow-50 focus:bg-yellow-100"
+                                        : "bg-white focus:bg-orange-50"
                                   }`}
                                   value={currentShiftType}
                                   disabled={isDisabledSunday}
@@ -3087,6 +3434,127 @@ export default function HomePage() {
                             }
                           />
                         </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              ) : (
+              <div className="min-w-max space-y-3">
+                <div className="flex items-center gap-2">
+                  <label htmlFor="daily-view-date" className="text-sm font-semibold text-orange-800">
+                    表示日
+                  </label>
+                  <select
+                    id="daily-view-date"
+                    className="rounded-md border border-orange-200 bg-white px-2 py-1 text-sm text-orange-900"
+                    value={dailyViewDate}
+                    onChange={(event) => setDailyViewDate(event.target.value)}
+                  >
+                    {dates.map((date) => {
+                      const weekday = weekdayFromDateText(date);
+                      return (
+                        <option key={`daily-date-${date}`} value={date}>
+                          {`${dayLabelFromDateText(date)} (${WEEKDAY_LABELS[weekday]})`}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+                <table className={`min-w-max border border-orange-200 ${compactClass}`}>
+                  <thead className="bg-orange-100/70">
+                    <tr>
+                      <th className={`w-40 min-w-40 text-center align-middle font-semibold text-orange-900 ${compactHeadCellClass}`}>先生</th>
+                      <th className={`w-32 min-w-32 text-center align-middle font-semibold text-orange-900 ${compactHeadCellClass}`}>シフト</th>
+                      <th className={`w-32 min-w-32 text-center align-middle font-semibold text-orange-900 ${compactHeadCellClass}`}>勤務時間</th>
+                      {dailyTimelineTimes.map((time, index) => (
+                        <th
+                          key={`daily-time-${time}`}
+                          className={`min-w-14 whitespace-nowrap text-center align-middle text-[10px] font-semibold text-orange-900 ${compactHeadCellClass} ${headerStripeClass(
+                            index
+                          )}`}
+                        >
+                          {time}
+                        </th>
+                      ))}
+                    </tr>
+                    {(() => {
+                      const coverageForDate = dailyCoverageByDate.get(dailyViewDate) ?? new Map<string, { required: number | null; assigned: number }>();
+                      return (
+                        <>
+                          <tr>
+                            <th
+                              colSpan={3}
+                              className={`whitespace-nowrap text-center align-middle font-semibold text-orange-900 ${compactHeadCellClass}`}
+                            >
+                              必要人数
+                            </th>
+                            {dailyTimelineTimes.map((time, index) => {
+                              const required = coverageForDate.get(time)?.required ?? null;
+                              return (
+                                <th
+                                  key={`daily-required-${dailyViewDate}-${time}`}
+                                  className={`whitespace-nowrap text-center align-middle text-[10px] font-semibold text-orange-900 ${compactHeadCellClass} ${summaryStripeClass(
+                                    index
+                                  )}`}
+                                >
+                                  {required === null ? "-" : required}
+                                </th>
+                              );
+                            })}
+                          </tr>
+                          <tr>
+                            <th
+                              colSpan={3}
+                              className={`whitespace-nowrap text-center align-middle font-semibold text-orange-900 ${compactHeadCellClass}`}
+                            >
+                              配置人数
+                            </th>
+                            {dailyTimelineTimes.map((time, index) => {
+                              const coverage = coverageForDate.get(time) ?? { required: null, assigned: 0 };
+                              const isShortage = coverage.required !== null && coverage.assigned < coverage.required;
+                              return (
+                                <th
+                                  key={`daily-assigned-${dailyViewDate}-${time}`}
+                                  className={`whitespace-nowrap text-center align-middle text-[10px] font-semibold ${
+                                    isShortage ? "text-red-600" : "text-orange-900"
+                                  } ${compactHeadCellClass} ${summaryStripeClass(index)}`}
+                                >
+                                  {coverage.assigned}
+                                </th>
+                              );
+                            })}
+                          </tr>
+                        </>
+                      );
+                    })()}
+                  </thead>
+                  <tbody>
+                    {(dailyRowsByDate.get(dailyViewDate) ?? []).map((row, rowIndex) => (
+                      <tr key={`daily-row-${dailyViewDate}-${row.name}`} className={`h-8 border-t border-orange-100 ${rowIndex % 2 === 0 ? "bg-white" : "bg-orange-50/30"}`}>
+                        <td className={`whitespace-nowrap text-orange-900 ${compactBodyCellClass}`}>{row.name}</td>
+                        <td className={`whitespace-nowrap text-center text-orange-900 ${compactBodyCellClass}`}>{row.shiftText}</td>
+                        <td className={`whitespace-nowrap text-center text-orange-900 ${compactBodyCellClass}`}>{row.timeText}</td>
+                        {dailyTimelineTimes.map((time, index) => {
+                          const targetMinutes = timeToMinutes(time);
+                          const isWorking = row.timelineShiftTypes.some((shiftType) => {
+                            const pattern = shiftPatternByCode.get(shiftType);
+                            if (!pattern) {
+                              return false;
+                            }
+                            const start = timeToMinutes(pattern.startTime);
+                            const end = timeToMinutes(pattern.endTime);
+                            return targetMinutes >= start && targetMinutes < end;
+                          });
+                          return (
+                            <td
+                              key={`daily-cell-${dailyViewDate}-${row.name}-${time}`}
+                              className={`h-8 min-w-14 border-l border-orange-100 ${isWorking ? "bg-orange-300/70 text-orange-900" : bodyStripeClass(index)}`}
+                            >
+                              {isWorking ? <span className="block text-center text-[10px] font-semibold">●</span> : null}
+                            </td>
+                          );
+                        })}
                       </tr>
                     ))}
                   </tbody>
