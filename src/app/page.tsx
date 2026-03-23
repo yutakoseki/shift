@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { createDefaultShiftRules, MasterData, PartTimeStaff, ShiftRules } from "@/types/master-data";
 import { SHIFT_CLASS_GROUPS, ShiftClassGroup, ShiftColumn, ShiftEntry, ShiftMonthResponse } from "@/types/shift";
 import FullscreenLoading from "@/components/fullscreen-loading";
@@ -33,7 +34,7 @@ type ShortageItem = {
   assigned: number;
 };
 
-type PlannerStep = 1 | 2 | 3 | 4 | 5;
+type PlannerStep = 1 | 2 | 3 | 4 | 5 | 6;
 
 type AutoGenerateLogLevel = "info" | "warn";
 
@@ -277,6 +278,9 @@ export default function HomePage() {
   const [offInputConfirmed, setOffInputConfirmed] = useState(false);
   const [eventInputConfirmed, setEventInputConfirmed] = useState(false);
   const [ruleConfirmed, setRuleConfirmed] = useState(false);
+  const [supplementNote, setSupplementNote] = useState("");
+  const [showCreateStepModal, setShowCreateStepModal] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
   const [autoGenerating, setAutoGenerating] = useState(false);
   const [autoGenerateMessage, setAutoGenerateMessage] = useState("");
   const [autoGenerateError, setAutoGenerateError] = useState("");
@@ -288,6 +292,10 @@ export default function HomePage() {
   const bottomScrollRef = useRef<HTMLDivElement | null>(null);
   const [topScrollWidth, setTopScrollWidth] = useState(0);
   const syncingScrollFrom = useRef<"top" | "bottom" | null>(null);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   const dates = useMemo(() => monthToDates(month), [month]);
   useEffect(() => {
@@ -1479,85 +1487,85 @@ export default function HomePage() {
   }, [headerMenuColumnId]);
 
   useEffect(() => {
-    if (plannerStep === 2 && viewMode !== "staff") {
+    if (plannerStep === 3 && viewMode !== "staff") {
       setViewMode("staff");
     }
   }, [plannerStep, viewMode]);
 
   const stepDefinitions = [
-    { id: 1 as PlannerStep, title: "対象月の確定" },
-    { id: 2 as PlannerStep, title: "休み入力（先生別）" },
-    { id: 3 as PlannerStep, title: "イベント入力" },
-    { id: 4 as PlannerStep, title: "ルール確認" },
-    { id: 5 as PlannerStep, title: "自動作成" }
+    { id: 1 as PlannerStep, title: "ルール確認" },
+    { id: 2 as PlannerStep, title: "対象月の選択" },
+    { id: 3 as PlannerStep, title: "休み入力（先生別）" },
+    { id: 4 as PlannerStep, title: "イベント入力" },
+    { id: 5 as PlannerStep, title: "補足事項入力" },
+    { id: 6 as PlannerStep, title: "自動作成" }
   ];
 
   function stepCompleted(step: PlannerStep): boolean {
     if (step === 1) {
-      return monthConfirmed;
+      return ruleConfirmed;
     }
     if (step === 2) {
-      return offInputConfirmed;
+      return monthConfirmed;
     }
     if (step === 3) {
-      return eventInputConfirmed;
+      return offInputConfirmed;
     }
     if (step === 4) {
-      return ruleConfirmed;
+      return eventInputConfirmed;
+    }
+    if (step === 5) {
+      return supplementNote.trim().length > 0 || plannerStep === 6;
     }
     return false;
   }
 
   function currentStepCanProceed(): boolean {
-    if (plannerStep === 1) {
-      return monthConfirmed;
-    }
     if (plannerStep === 2) {
-      return offInputConfirmed;
+      return month.trim().length > 0;
     }
-    if (plannerStep === 3) {
-      return eventInputConfirmed;
-    }
-    if (plannerStep === 4) {
-      return ruleConfirmed;
-    }
-    return true;
+    return plannerStep >= 1 && plannerStep <= 6;
   }
 
   function nextStep(): void {
-    if (plannerStep === 5) {
+    if (plannerStep === 6) {
       return;
     }
     if (!currentStepCanProceed()) {
-      const message =
-        plannerStep === 1
-          ? "対象月を確認して「この月で進める」をオンにしてください。"
-          : plannerStep === 2
-            ? "休み入力を確認して「休み入力が完了した」をオンにしてください。"
-            : plannerStep === 3
-              ? "イベント入力を確認して「イベント入力が完了した」をオンにしてください。"
-              : "ルール確認後に「ルール確認が完了した」をオンにしてください。";
+      const message = plannerStep === 2 ? "対象月を選択してください。" : "次へ進むための条件を確認してください。";
       alert(message);
       return;
     }
     if (plannerStep === 1) {
+      setRuleConfirmed(true);
       setPlannerStep(2);
       return;
     }
     if (plannerStep === 2) {
+      setMonthConfirmed(true);
       setPlannerStep(3);
       return;
     }
     if (plannerStep === 3) {
+      setOffInputConfirmed(true);
       setPlannerStep(4);
       return;
     }
     if (plannerStep === 4) {
+      setEventInputConfirmed(true);
       setPlannerStep(5);
+      return;
+    }
+    if (plannerStep === 5) {
+      setPlannerStep(6);
     }
   }
 
   function prevStep(): void {
+    if (plannerStep === 6) {
+      setPlannerStep(5);
+      return;
+    }
     if (plannerStep === 5) {
       setPlannerStep(4);
       return;
@@ -1580,13 +1588,13 @@ export default function HomePage() {
     setMonthConfirmed(false);
     setOffInputConfirmed(false);
     setEventInputConfirmed(false);
-    setRuleConfirmed(false);
+    setSupplementNote("");
     setAutoGenerateMessage("");
     setAutoGenerateError("");
     setAutoGenerateLogs([]);
     setAutoStepSnapshots([]);
     setAutoStepIndex(-1);
-    setPlannerStep(1);
+    setPlannerStep((prev) => (prev <= 2 ? prev : 2));
   }
 
   function applyAutoStepSnapshot(index: number): void {
@@ -1866,6 +1874,9 @@ export default function HomePage() {
           preventFixedFullTimeShift ? "有効" : "無効"
         }`
       );
+      if (supplementNote.trim().length > 0) {
+        appendLog("info", "rules", `補足事項: ${supplementNote.trim()}`);
+      }
 
       const shiftTypesByStart = shiftColumns
         .map((column) => ({
@@ -2598,226 +2609,45 @@ export default function HomePage() {
             >
               {saving ? "保存中..." : "保存"}
             </button>
+            <button
+              className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-60"
+              onClick={() => setShowCreateStepModal(true)}
+              disabled={loadingData}
+            >
+              シフト自動作成
+            </button>
           </div>
         </div>
         </section>
-
-        <section className="rounded-xl bg-white p-4 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-orange-900">作成ステップ</h2>
-              <p className="text-sm text-orange-700">園長先生向けに、手順を1つずつ進めながら自動作成の準備を行います。</p>
+        {autoGenerateMessage ? <p className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{autoGenerateMessage}</p> : null}
+        {autoGenerateError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{autoGenerateError}</p> : null}
+        {autoGenerateLogs.length > 0 ? (
+          <section className="rounded-xl bg-white p-4 shadow-sm">
+            <div className="rounded-md border border-orange-200 bg-white">
+              <div className="flex items-center justify-between border-b border-orange-100 px-3 py-2">
+                <p className="text-sm font-semibold text-orange-900">自動作成ログ</p>
+                <p className="text-xs text-orange-700">{autoGenerateLogs.length}件</p>
+              </div>
+              <div className="max-h-72 overflow-auto px-3 py-2">
+                <p className="mb-2 text-xs text-orange-700">先生向けにわかりやすい表現で表示しています。</p>
+                <ul className="space-y-1">
+                  {autoGenerateLogs.map((log) => (
+                    <li
+                      key={log.id}
+                      className={`rounded px-2 py-1 text-xs ${
+                        log.level === "warn" ? "bg-red-50 text-red-700" : "bg-orange-50 text-orange-800"
+                      }`}
+                    >
+                      {`${String(log.sequence).padStart(3, "0")} ${log.time} [${teacherFriendlyStepLabel(log.step)}] ${teacherFriendlyMessage(log)}`}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
-            <p className="rounded-md bg-orange-100 px-3 py-1 text-sm font-semibold text-orange-800">
-              現在: Step {plannerStep} / 5
-            </p>
-          </div>
-          <div className="mt-3 grid gap-2 md:grid-cols-5">
-            {stepDefinitions.map((step) => {
-              const active = plannerStep === step.id;
-              const completed = stepCompleted(step.id);
-              return (
-                <button
-                  key={step.id}
-                  className={`rounded-md border px-3 py-2 text-left text-sm ${
-                    active
-                      ? "border-orange-400 bg-orange-100 text-orange-900"
-                      : completed
-                        ? "border-green-300 bg-green-50 text-green-800"
-                        : "border-orange-200 bg-white text-orange-700"
-                  }`}
-                  onClick={() => setPlannerStep(step.id)}
-                >
-                  <div className="text-xs font-semibold">Step {step.id}</div>
-                  <div className="mt-1 font-medium">{step.title}</div>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="mt-4 rounded-lg bg-orange-50 p-3">
-            {plannerStep === 1 ? (
-              <label className="flex items-center gap-2 text-sm text-orange-900">
-                <input
-                  className="orange-checkbox"
-                  type="checkbox"
-                  checked={monthConfirmed}
-                  onChange={(event) => setMonthConfirmed(event.target.checked)}
-                />
-                この月（{month}）で作成を進める
-              </label>
-            ) : null}
-            {plannerStep === 2 ? (
-              <label className="flex items-center gap-2 text-sm text-orange-900">
-                <input
-                  className="orange-checkbox"
-                  type="checkbox"
-                  checked={offInputConfirmed}
-                  onChange={(event) => setOffInputConfirmed(event.target.checked)}
-                />
-                休み入力が完了した（入力済み: {offRecordCount}件）
-              </label>
-            ) : null}
-            {plannerStep === 3 ? (
-              <label className="flex items-center gap-2 text-sm text-orange-900">
-                <input
-                  className="orange-checkbox"
-                  type="checkbox"
-                  checked={eventInputConfirmed}
-                  onChange={(event) => setEventInputConfirmed(event.target.checked)}
-                />
-                イベント入力が完了した（入力済み: {eventInputCount}日）
-              </label>
-            ) : null}
-            {plannerStep === 4 ? (
-              <div className="space-y-2">
-                <p className="text-sm text-orange-900">自動作成前に、土曜人数・振替休日・作成順序のルールを確認してください。</p>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Link href="/data/shift-rules" className="rounded-md bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200">
-                    シフトルール管理を開く
-                  </Link>
-                  <label className="flex items-center gap-2 text-sm text-orange-900">
-                    <input
-                      className="orange-checkbox"
-                      type="checkbox"
-                      checked={ruleConfirmed}
-                      onChange={(event) => setRuleConfirmed(event.target.checked)}
-                    />
-                    ルール確認が完了した
-                  </label>
-                </div>
-              </div>
-            ) : null}
-            {plannerStep === 5 ? (
-              <div className="space-y-2">
-                <p className="text-sm text-orange-900">準備が完了したので、自動作成を実行します。</p>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-60"
-                    onClick={() => handleAutoGenerateDraft()}
-                    disabled={autoGenerating}
-                  >
-                    {autoGenerating ? (
-                      <span className="inline-flex items-center gap-2">
-                        <span
-                          className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white"
-                          aria-hidden="true"
-                        />
-                        自動作成中...
-                      </span>
-                    ) : (
-                      "自動作成を実行（下書き）"
-                    )}
-                  </button>
-                  <button
-                    className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200 disabled:opacity-60"
-                    onClick={() => {
-                      setAutoStepSnapshots([]);
-                      setAutoStepIndex(-1);
-                    }}
-                    disabled={autoGenerating || autoStepSnapshots.length === 0}
-                  >
-                    ステップ下書きをクリア
-                  </button>
-                </div>
-                {autoStepSnapshots.length > 0 ? (
-                  <div className="rounded-md border border-orange-200 bg-orange-50 p-3">
-                    <p className="text-sm font-semibold text-orange-900">
-                      自動作成ステップ確認: {autoStepIndex + 1} / {autoStepSnapshots.length}
-                    </p>
-                    <p className="mt-1 text-sm text-orange-800">
-                      {autoStepIndex >= 0 ? autoStepSnapshots[autoStepIndex]?.label : ""}{" "}
-                      {autoStepIndex >= 0 ? `- ${autoStepSnapshots[autoStepIndex]?.note}` : ""}
-                    </p>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <button
-                        className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200 disabled:opacity-50"
-                        onClick={() => applyAutoStepSnapshot(Math.max(0, autoStepIndex - 1))}
-                        disabled={autoStepIndex <= 0}
-                      >
-                        前の自動ステップを反映
-                      </button>
-                      <button
-                        className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-50"
-                        onClick={() => applyAutoStepSnapshot(Math.min(autoStepSnapshots.length - 1, autoStepIndex + 1))}
-                        disabled={autoStepIndex >= autoStepSnapshots.length - 1}
-                      >
-                        次の自動ステップを反映
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            {autoGenerateMessage ? (
-              <p className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{autoGenerateMessage}</p>
-            ) : null}
-            {autoGenerateError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{autoGenerateError}</p> : null}
-            {autoGenerateLogs.length > 0 ? (
-              <div className="rounded-md border border-orange-200 bg-white">
-                <div className="flex items-center justify-between border-b border-orange-100 px-3 py-2">
-                  <p className="text-sm font-semibold text-orange-900">自動作成ログ</p>
-                  <p className="text-xs text-orange-700">{autoGenerateLogs.length}件</p>
-                </div>
-                <div className="max-h-72 overflow-auto px-3 py-2">
-                  <p className="mb-2 text-xs text-orange-700">先生向けにわかりやすい表現で表示しています。</p>
-                  <ul className="space-y-1">
-                    {autoGenerateLogs.map((log) => (
-                      <li
-                        key={log.id}
-                        className={`rounded px-2 py-1 text-xs ${
-                          log.level === "warn" ? "bg-red-50 text-red-700" : "bg-orange-50 text-orange-800"
-                        }`}
-                      >
-                        {`${String(log.sequence).padStart(3, "0")} ${log.time} [${teacherFriendlyStepLabel(log.step)}] ${teacherFriendlyMessage(log)}`}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="mt-3 flex justify-end gap-2">
-            <button
-              className="rounded-md bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200 disabled:opacity-50"
-              onClick={() => prevStep()}
-              disabled={plannerStep === 1}
-            >
-              前のステップ
-            </button>
-            <button
-              className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-50"
-              onClick={() => nextStep()}
-              disabled={plannerStep === 5}
-            >
-              次のステップ
-            </button>
-          </div>
-        </section>
+          </section>
+        ) : null}
 
         <section className="rounded-xl bg-white p-4 shadow-sm">
-          <p className="text-sm text-orange-700">
-            必要先生人数は、時間帯チェックは対人数ベース、日次人数チェックは曜日別で判定します。土曜日ルールは日次人数の下限として適用します。
-          </p>
-          <p className="mt-1 text-sm text-orange-800">
-            土曜日の必要人数:{" "}
-            <span className="font-semibold">
-              {activeSaturdayRequirement.enabled ? `${activeSaturdayRequirement.minTotalStaff}人` : "ルール無効"}
-            </span>
-          </p>
-          <p className="mt-1 text-sm text-orange-700">
-            上段は「通常(土曜)」の順で編集できます。左が全日共通、括弧内が土曜日専用の上書き値です。
-          </p>
-          <p className="mt-1 text-sm text-orange-700">
-            {plannerStep === 2
-              ? "Step2: 先生別表示で休みを入力してください。"
-              : plannerStep === 3
-                ? "Step3: イベント欄を入力してください。"
-                : plannerStep === 5
-                  ? "Step5: 内容確認後に自動作成（下書き）を実行してください。"
-                  : "必要に応じてクラス別 / 先生別 / 日別を切り替えて確認・編集できます。"}
-          </p>
           <div className="mt-3 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <button
@@ -2825,7 +2655,7 @@ export default function HomePage() {
                   viewMode === "class" ? "bg-orange-500 text-white" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
                 }`}
                 onClick={() => setViewMode("class")}
-                disabled={plannerStep === 2}
+                disabled={plannerStep === 3}
               >
                 クラス別表示
               </button>
@@ -3564,6 +3394,223 @@ export default function HomePage() {
             </div>
           </div>
         </section>
+
+        {isMounted && showCreateStepModal
+          ? createPortal(
+          <div className="fixed inset-0 z-50 m-0 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-3xl rounded-lg bg-white p-4 shadow-lg">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-semibold text-orange-900">作成ステップ</h3>
+                  <p className="mt-1 text-sm text-orange-700">シフト作成ボタンから、モーダルで手順を順番に進めます。</p>
+                </div>
+                <button
+                  className="rounded bg-orange-100 px-2 py-1 text-sm text-orange-700 hover:bg-orange-200"
+                  onClick={() => setShowCreateStepModal(false)}
+                >
+                  閉じる
+                </button>
+              </div>
+
+              <div className="mt-3 grid gap-2 md:grid-cols-6">
+                {stepDefinitions.map((step) => {
+                  const active = plannerStep === step.id;
+                  const completed = stepCompleted(step.id);
+                  return (
+                    <button
+                      key={`modal-step-${step.id}`}
+                      className={`rounded-md border px-2 py-2 text-left text-xs ${
+                        active
+                          ? "border-orange-400 bg-orange-100 text-orange-900"
+                          : completed
+                            ? "border-yellow-300 bg-yellow-50 text-yellow-800"
+                            : "border-orange-200 bg-white text-orange-700"
+                      }`}
+                      onClick={() => setPlannerStep(step.id)}
+                    >
+                      <div className="font-semibold">Step {step.id}</div>
+                      <div className="mt-1">{step.title}</div>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-sm font-semibold text-orange-800">現在: Step {plannerStep} / 6</p>
+
+              <div className="mt-4 rounded-md bg-orange-50 p-3">
+                {plannerStep === 1 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-orange-900">
+                      ルールを確認してください。「ルールを確認」を押すと管理画面を開きます。
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Link href="/data/shift-rules" className="rounded-md bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200">
+                        ルールを確認
+                      </Link>
+                    </div>
+                  </div>
+                ) : null}
+
+                {plannerStep === 2 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-orange-900">何月分のシフトを作成するかを選択してください。</p>
+                    <label className="text-sm text-orange-900">
+                      月:
+                      <input
+                        type="month"
+                        className="ml-2 rounded-md bg-white px-2 py-1"
+                        value={month}
+                        onChange={(event) => handleMonthChange(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                ) : null}
+
+                {plannerStep === 3 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-orange-900">休み入力ステップです。「入力」で先生別表示タブに移動します。</p>
+                    <p className="text-sm text-orange-700">入力済み: {offRecordCount}件</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        className="rounded-md bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200"
+                        onClick={() => {
+                          setViewMode("staff");
+                          setShowCreateStepModal(false);
+                        }}
+                      >
+                        入力
+                      </button>
+                      <button
+                        className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600"
+                        onClick={() => nextStep()}
+                      >
+                        次へ
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {plannerStep === 4 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-orange-900">イベント入力ステップです。休み入力と同じく「入力」または「次へ」で進めます。</p>
+                    <p className="text-sm text-orange-700">入力済み: {eventInputCount}日</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        className="rounded-md bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200"
+                        onClick={() => {
+                          setViewMode("staff");
+                          setShowCreateStepModal(false);
+                        }}
+                      >
+                        入力
+                      </button>
+                      <button
+                        className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600"
+                        onClick={() => nextStep()}
+                      >
+                        次へ
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {plannerStep === 5 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-orange-900">補足事項（AI利用予定）を入力してください。</p>
+                    <textarea
+                      className="h-24 w-full resize-y rounded bg-white px-2 py-1 text-sm text-orange-900"
+                      value={supplementNote}
+                      onChange={(event) => setSupplementNote(event.target.value)}
+                      placeholder="例: 4/15は行事準備のため、午後はきりん組を厚めに配置したい"
+                    />
+                    <div className="flex justify-end">
+                      <button
+                        className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600"
+                        onClick={() => nextStep()}
+                      >
+                        次へ
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {plannerStep === 6 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-orange-900">準備完了です。自動作成を実行してください。</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-60"
+                        onClick={() => handleAutoGenerateDraft()}
+                        disabled={autoGenerating}
+                      >
+                        {autoGenerating ? "自動作成中..." : "自動作成を実行（下書き）"}
+                      </button>
+                      <button
+                        className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200 disabled:opacity-60"
+                        onClick={() => {
+                          setAutoStepSnapshots([]);
+                          setAutoStepIndex(-1);
+                        }}
+                        disabled={autoGenerating || autoStepSnapshots.length === 0}
+                      >
+                        ステップ下書きをクリア
+                      </button>
+                    </div>
+                    {autoStepSnapshots.length > 0 ? (
+                      <div className="rounded-md border border-orange-200 bg-white p-3">
+                        <p className="text-sm font-semibold text-orange-900">
+                          自動作成ステップ確認: {autoStepIndex + 1} / {autoStepSnapshots.length}
+                        </p>
+                        <p className="mt-1 text-sm text-orange-800">
+                          {autoStepIndex >= 0 ? autoStepSnapshots[autoStepIndex]?.label : ""}{" "}
+                          {autoStepIndex >= 0 ? `- ${autoStepSnapshots[autoStepIndex]?.note}` : ""}
+                        </p>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <button
+                            className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200 disabled:opacity-50"
+                            onClick={() => applyAutoStepSnapshot(Math.max(0, autoStepIndex - 1))}
+                            disabled={autoStepIndex <= 0}
+                          >
+                            前の自動ステップを反映
+                          </button>
+                          <button
+                            className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-50"
+                            onClick={() => applyAutoStepSnapshot(Math.min(autoStepSnapshots.length - 1, autoStepIndex + 1))}
+                            disabled={autoStepIndex >= autoStepSnapshots.length - 1}
+                          >
+                            次の自動ステップを反映
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="mt-3 flex justify-between">
+                  <button
+                    className="rounded-md bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200 disabled:opacity-50"
+                    onClick={() => prevStep()}
+                    disabled={plannerStep === 1}
+                  >
+                    戻る
+                  </button>
+                  {plannerStep !== 3 && plannerStep !== 4 && plannerStep < 6 ? (
+                    <button
+                      className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600"
+                      onClick={() => nextStep()}
+                    >
+                      次へ
+                    </button>
+                  ) : (
+                    <span />
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+            ,
+            document.body
+          )
+          : null}
 
         {addColumnBaseColumnId ? (
           <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30 p-4">
