@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const DEFAULT_BASE_URL = "http://localhost:3001";
+const FALLBACK_BASE_URL = "http://localhost:3000";
 const API_PATH = "/api/master-data";
 
 function toIsoDate(year, month, day) {
@@ -22,10 +23,6 @@ function createAttendance(startTime, endTime, saturdayEnabled = false) {
 
 function buildShiftPatterns() {
   const defaultPatterns = [
-    ["A1", "06:00", "15:00"],
-    ["A2", "06:15", "15:15"],
-    ["A3", "06:30", "15:30"],
-    ["A4", "06:45", "15:45"],
     ["B1", "07:00", "16:00"],
     ["B2", "07:15", "16:15"],
     ["B3", "07:30", "16:30"],
@@ -79,14 +76,19 @@ function classLabel(classItem) {
 
 function buildFullTimeStaff() {
   return [
-    { id: "full-001", name: "田中 早苗", mainClass: "ひよこ,あひる", possibleShiftPatternCodes: ["A1", "A2", "B1", "C1"] },
+    { id: "full-001", name: "田中 早苗", mainClass: "ひよこ,あひる", possibleShiftPatternCodes: ["B1", "B2", "C1", "F1"] },
     { id: "full-002", name: "佐藤 美咲", mainClass: "うさぎ", possibleShiftPatternCodes: ["B1", "B2", "C1", "D1"] },
     { id: "full-003", name: "鈴木 京子", mainClass: "くま", possibleShiftPatternCodes: ["B3", "C2", "D2", "E1"] },
     { id: "full-004", name: "高橋 直子", mainClass: "きりん", possibleShiftPatternCodes: ["C1", "C2", "D1", "D2"] },
     { id: "full-005", name: "伊藤 真由", mainClass: "ぞう", possibleShiftPatternCodes: ["C3", "D2", "D3", "N1"] },
-    { id: "full-006", name: "渡辺 彩", mainClass: "ひよこ,うさぎ", possibleShiftPatternCodes: ["A3", "B2", "C2", "D1"] },
-    { id: "full-007", name: "山本 綾", mainClass: "あひる,くま", possibleShiftPatternCodes: ["A4", "B4", "C4", "D4"] },
-    { id: "full-008", name: "中村 由佳", mainClass: "きりん,ぞう", possibleShiftPatternCodes: ["B3", "C3", "D3", "N1"] }
+    { id: "full-006", name: "渡辺 彩", mainClass: "ひよこ,うさぎ", possibleShiftPatternCodes: ["B2", "C2", "D1", "E2"] },
+    { id: "full-007", name: "山本 綾", mainClass: "あひる,くま", possibleShiftPatternCodes: ["B4", "C4", "D4", "E3"] },
+    { id: "full-008", name: "中村 由佳", mainClass: "きりん,ぞう", possibleShiftPatternCodes: ["B3", "C3", "D3", "N1"] },
+    { id: "full-009", name: "小川 真希", mainClass: "ひよこ", possibleShiftPatternCodes: ["B1", "C1", "D1", "S3"] },
+    { id: "full-010", name: "石井 玲奈", mainClass: "あひる", possibleShiftPatternCodes: ["B2", "C2", "D2", "E2"] },
+    { id: "full-011", name: "林 由美", mainClass: "うさぎ,くま", possibleShiftPatternCodes: ["B3", "C3", "D3", "F1"] },
+    { id: "full-012", name: "井口 美帆", mainClass: "きりん", possibleShiftPatternCodes: ["C2", "D2", "E3", "L1"] },
+    { id: "full-013", name: "三浦 佳奈", mainClass: "ぞう", possibleShiftPatternCodes: ["C4", "D4", "N1", "N2"] }
   ];
 }
 
@@ -224,8 +226,43 @@ function buildChildren(classes) {
   });
 }
 
+function buildShiftRules() {
+  return {
+    saturdayRequirement: {
+      enabled: true,
+      minTotalStaff: 3,
+      combinations: [
+        { partTimeCount: 2, fullTimeCount: 1 },
+        { partTimeCount: 1, fullTimeCount: 2 },
+        { partTimeCount: 0, fullTimeCount: 3 }
+      ]
+    },
+    compensatoryHoliday: {
+      enabled: true,
+      sameWeekRequired: true,
+      description: "土曜日に出勤した職員は、原則として同じ週に振替休日を取得する。"
+    },
+    creationOrder: [
+      { id: "step-1", order: 1, title: "休みを入力" },
+      { id: "step-2", order: 2, title: "イベントを入力" },
+      { id: "step-3", order: 3, title: "パートさんでほぼ入れる人を入れる" },
+      { id: "step-4", order: 4, title: "常勤の早番を入れる" },
+      { id: "step-5", order: 5, title: "常勤の遅番を入れる" },
+      { id: "step-6", order: 6, title: "週◯回のパートさんを入れる" },
+      { id: "step-7", order: 7, title: "常勤で調整する" }
+    ],
+    autoGenerationPolicy: {
+      useProgrammaticLogic: true,
+      useAi: true,
+      skipSundayProcessing: true,
+      preventFixedFullTimeShift: true,
+      description: "シフト自動作成は、ルールベースのプログラムとAI補助を組み合わせて実行する。"
+    }
+  };
+}
+
 function parseArgs(argv) {
-  const args = { baseUrl: DEFAULT_BASE_URL, dryRun: false };
+  const args = { baseUrl: "", dryRun: false };
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (token === "--dry-run") {
@@ -241,9 +278,40 @@ function parseArgs(argv) {
   return args;
 }
 
+function buildEndpoint(baseUrl) {
+  return `${baseUrl.replace(/\/$/, "")}${API_PATH}`;
+}
+
+async function endpointReachable(endpoint) {
+  try {
+    const response = await fetch(endpoint);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveEndpoint(baseUrlArg) {
+  if (baseUrlArg) {
+    return buildEndpoint(baseUrlArg);
+  }
+
+  const primaryEndpoint = buildEndpoint(DEFAULT_BASE_URL);
+  if (await endpointReachable(primaryEndpoint)) {
+    return primaryEndpoint;
+  }
+
+  const fallbackEndpoint = buildEndpoint(FALLBACK_BASE_URL);
+  if (await endpointReachable(fallbackEndpoint)) {
+    return fallbackEndpoint;
+  }
+
+  return primaryEndpoint;
+}
+
 async function main() {
   const { baseUrl, dryRun } = parseArgs(process.argv.slice(2));
-  const endpoint = `${baseUrl.replace(/\/$/, "")}${API_PATH}`;
+  const endpoint = await resolveEndpoint(baseUrl);
 
   const response = await fetch(endpoint);
   if (!response.ok) {
@@ -256,6 +324,7 @@ async function main() {
   const fullTimeStaff = buildFullTimeStaff();
   const partTimeStaff = buildPartTimeStaff();
   const children = buildChildren(nurseryClasses);
+  const shiftRules = buildShiftRules();
 
   const nextData = {
     ...currentData,
@@ -264,6 +333,7 @@ async function main() {
     fullTimeStaff,
     partTimeStaff,
     children,
+    shiftRules,
     updatedAt: new Date().toISOString()
   };
 

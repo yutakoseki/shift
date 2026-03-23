@@ -12,6 +12,11 @@ export default function DataPage() {
     },
     { href: "/data/children", title: "園児管理", description: "名前・生年月日・登園曜日/時間（年齢自動計算）" },
     { href: "/data/shift-patterns", title: "シフトパターン管理", description: "A1〜D4 とカスタムシフト" },
+    {
+      href: "/data/shift-rules",
+      title: "シフトルール管理",
+      description: "自動作成ルール（必須人数・振替休日・作成順序・AI方針）"
+    },
     { href: "/data/child-ratios", title: "対人数（比率）管理", description: "0〜5歳児の比率（1/◯）" },
     { href: "/data/classes", title: "クラス管理", description: "クラス名（ひよこ等）と対象年齢帯" }
   ] as const;

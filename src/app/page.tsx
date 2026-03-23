@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MasterData, PartTimeStaff } from "@/types/master-data";
+import { createDefaultShiftRules, MasterData, PartTimeStaff, ShiftRules } from "@/types/master-data";
 import { SHIFT_CLASS_GROUPS, ShiftClassGroup, ShiftColumn, ShiftEntry, ShiftMonthResponse } from "@/types/shift";
 import FullscreenLoading from "@/components/fullscreen-loading";
+import { showToast } from "@/lib/master-data-client";
 
 const REQUIRED_STAFF_TIMES = [
   "06:00",
@@ -29,6 +31,28 @@ type ShortageItem = {
   time: string;
   required: number;
   assigned: number;
+};
+
+type PlannerStep = 1 | 2 | 3 | 4 | 5;
+
+type AutoGenerateLogLevel = "info" | "warn";
+
+type AutoGenerateLogItem = {
+  id: string;
+  sequence: number;
+  time: string;
+  level: AutoGenerateLogLevel;
+  step: string;
+  message: string;
+};
+
+type AutoGenerationSnapshot = {
+  id: string;
+  label: string;
+  note: string;
+  cells: Record<string, string>;
+  offByDateAndStaff: Record<string, boolean>;
+  logs: AutoGenerateLogItem[];
 };
 
 function createShiftColumnId(shiftType: string): string {
@@ -59,6 +83,10 @@ function keyOf(date: string, columnId: string, classGroup: ShiftClassGroup): str
 function timeToMinutes(value: string): number {
   const [h, m] = value.split(":").map(Number);
   return h * 60 + m;
+}
+
+function isSundayDate(date: string): boolean {
+  return new Date(`${date}T00:00:00`).getDay() === 0;
 }
 
 function ageAtMonthStart(birthDate: string, month: string): number | null {
@@ -121,9 +149,65 @@ function weekdayFromDateText(date: string): number {
 }
 
 function dayLabelFromDateText(date: string): string {
-  const [_, __, dayText] = date.split("-");
+  const dayText = date.split("-")[2];
   const dayNumber = Number(dayText);
   return Number.isFinite(dayNumber) ? String(dayNumber) : date;
+}
+
+function shortDateWithWeekday(date: string): string {
+  const parts = date.split("-");
+  const monthText = parts[1];
+  const dayText = parts[2];
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const weekday = weekdayFromDateText(date);
+  if (!Number.isFinite(month) || !Number.isFinite(day)) {
+    return date;
+  }
+  return `${month}/${day}(${WEEKDAY_LABELS[weekday]})`;
+}
+
+function teacherFriendlyStepLabel(step: string): string {
+  const map: Record<string, string> = {
+    start: "開始",
+    rules: "ルール確認",
+    capacity: "その日の配置可能人数確認",
+    "step-1": "休み入力の反映",
+    "step-2": "イベント入力の反映",
+    "step-3": "パート優先配置",
+    "step-4": "常勤早番配置",
+    "step-5": "常勤遅番配置",
+    "step-6": "パート配置",
+    "step-7": "常勤調整",
+    "step-7b": "振替後の再調整",
+    "compensatory-holiday": "振替休日の調整",
+    "daily-summary": "1日ごとの結果",
+    "saturday-rule": "土曜ルール確認",
+    "analysis": "配置バランス確認",
+    "hard-rule-time": "時間帯不足チェック",
+    "hard-rule": "絶対ルールチェック",
+    "soft-rule": "目安不足チェック",
+    finish: "完了",
+    error: "エラー"
+  };
+  return map[step] ?? step;
+}
+
+function teacherFriendlyMessage(log: AutoGenerateLogItem): string {
+  const datePrefixMatch = log.message.match(/^(\d{4}-\d{2}-\d{2}):\s*(.*)$/);
+  if (datePrefixMatch) {
+    return `${shortDateWithWeekday(datePrefixMatch[1])}: ${datePrefixMatch[2]}`;
+  }
+
+  const dateTimePrefixMatch = log.message.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}):\s*(.*)$/);
+  if (dateTimePrefixMatch) {
+    return `${shortDateWithWeekday(dateTimePrefixMatch[1])} ${dateTimePrefixMatch[2]}: ${dateTimePrefixMatch[3]}`;
+  }
+
+  return log.message
+    .replaceAll("必要目安", "必要")
+    .replaceAll("可用", "出勤可能")
+    .replaceAll("枠", "入力枠");
 }
 
 function headerStripeClass(columnIndex: number): string {
@@ -161,6 +245,18 @@ export default function HomePage() {
   const [viewMode, setViewMode] = useState<"class" | "staff">("class");
   const [eventByDate, setEventByDate] = useState<Record<string, string>>({});
   const [noteByDate, setNoteByDate] = useState<Record<string, string>>({});
+  const [plannerStep, setPlannerStep] = useState<PlannerStep>(1);
+  const [monthConfirmed, setMonthConfirmed] = useState(false);
+  const [offInputConfirmed, setOffInputConfirmed] = useState(false);
+  const [eventInputConfirmed, setEventInputConfirmed] = useState(false);
+  const [ruleConfirmed, setRuleConfirmed] = useState(false);
+  const [autoGenerating, setAutoGenerating] = useState(false);
+  const [autoGenerateMessage, setAutoGenerateMessage] = useState("");
+  const [autoGenerateError, setAutoGenerateError] = useState("");
+  const [autoGenerateLogs, setAutoGenerateLogs] = useState<AutoGenerateLogItem[]>([]);
+  const [autoStepSnapshots, setAutoStepSnapshots] = useState<AutoGenerationSnapshot[]>([]);
+  const [autoStepIndex, setAutoStepIndex] = useState(-1);
+  const autoGenerateRunningRef = useRef(false);
   const topScrollRef = useRef<HTMLDivElement | null>(null);
   const bottomScrollRef = useRef<HTMLDivElement | null>(null);
   const [topScrollWidth, setTopScrollWidth] = useState(0);
@@ -191,6 +287,14 @@ export default function HomePage() {
     const partNames = masterData.partTimeStaff.map((staff) => staff.name.trim()).filter((name) => name.length > 0);
     return Array.from(new Set([...fullNames, ...partNames]));
   }, [masterData]);
+  const offRecordCount = useMemo(
+    () => Object.values(offByDateAndStaff).filter((enabled) => enabled).length,
+    [offByDateAndStaff]
+  );
+  const eventInputCount = useMemo(
+    () => dates.filter((date) => (eventByDate[date] ?? "").trim().length > 0).length,
+    [dates, eventByDate]
+  );
 
   const partTimeByName = useMemo(() => {
     if (!masterData) {
@@ -210,6 +314,15 @@ export default function HomePage() {
     return new Map(shiftPatterns.map((pattern) => [pattern.code, pattern]));
   }, [shiftPatterns]);
 
+  const activeAutoGenerationPolicy = useMemo(
+    () => masterData?.shiftRules?.autoGenerationPolicy ?? createDefaultShiftRules().autoGenerationPolicy,
+    [masterData]
+  );
+  const activeSaturdayRequirement = useMemo(
+    () => masterData?.shiftRules?.saturdayRequirement ?? createDefaultShiftRules().saturdayRequirement,
+    [masterData]
+  );
+
   const requiredStaffByTime = useMemo(() => {
     if (!masterData) {
       return REQUIRED_STAFF_TIMES.map((time) => ({ time, requiredCount: 0 }));
@@ -226,6 +339,9 @@ export default function HomePage() {
       let maxRequiredCount = 0;
 
       for (let weekday = 0; weekday <= 6; weekday += 1) {
+        if (activeAutoGenerationPolicy.skipSundayProcessing && weekday === 0) {
+          continue;
+        }
         const childCountByAge = new Map<number, number>();
 
         for (const child of masterData.children) {
@@ -261,7 +377,7 @@ export default function HomePage() {
 
       return { time, requiredCount: maxRequiredCount };
     });
-  }, [masterData, month]);
+  }, [activeAutoGenerationPolicy.skipSundayProcessing, masterData, month]);
 
   const effectiveRequiredStaffByTime = useMemo(() => {
     return requiredStaffByTime.map((item) => ({
@@ -272,6 +388,79 @@ export default function HomePage() {
           : item.requiredCount
     }));
   }, [requiredOverrideByTime, requiredStaffByTime]);
+
+  const effectiveRequiredStaffCountByDate = useMemo(() => {
+    const countByDate = new Map<string, number[]>();
+    if (!masterData) {
+      for (const date of dates) {
+        countByDate.set(date, REQUIRED_STAFF_TIMES.map(() => 0));
+      }
+      return countByDate;
+    }
+
+    const ratioByAge = new Map(
+      masterData.childRatios
+        .filter((item) => Number.isFinite(item.age) && Number.isFinite(item.ratio) && item.ratio > 0)
+        .map((item) => [item.age, item.ratio])
+    );
+
+    for (const date of dates) {
+      const weekday = weekdayFromDateText(date);
+      if (activeAutoGenerationPolicy.skipSundayProcessing && weekday === 0) {
+        countByDate.set(date, REQUIRED_STAFF_TIMES.map(() => 0));
+        continue;
+      }
+
+      const counts = REQUIRED_STAFF_TIMES.map((time) => {
+        const targetMinutes = timeToMinutes(time);
+        const childCountByAge = new Map<number, number>();
+
+        for (const child of masterData.children) {
+          const age = ageAtMonthStart(child.birthDate, month);
+          if (age === null) {
+            continue;
+          }
+          const attendance = child.attendanceByWeekday.find((slot) => slot.weekday === weekday);
+          if (!attendance || !attendance.enabled) {
+            continue;
+          }
+          const startMinutes = timeToMinutes(attendance.startTime);
+          const endMinutes = timeToMinutes(attendance.endTime);
+          if (targetMinutes < startMinutes || targetMinutes >= endMinutes) {
+            continue;
+          }
+          childCountByAge.set(age, (childCountByAge.get(age) ?? 0) + 1);
+        }
+
+        let requiredCount = 0;
+        childCountByAge.forEach((childCount, age) => {
+          const ratio = resolveRatioForAge(age, ratioByAge);
+          if (!ratio || ratio <= 0) {
+            return;
+          }
+          requiredCount += Math.ceil(childCount / ratio);
+        });
+
+        const override = requiredOverrideByTime[time];
+        const withOverride = Number.isFinite(override) ? Math.max(0, override) : requiredCount;
+        if (weekday === 6 && activeSaturdayRequirement.enabled) {
+          return Math.max(withOverride, activeSaturdayRequirement.minTotalStaff);
+        }
+        return withOverride;
+      });
+      countByDate.set(date, counts);
+    }
+
+    return countByDate;
+  }, [
+    activeAutoGenerationPolicy.skipSundayProcessing,
+    activeSaturdayRequirement.enabled,
+    activeSaturdayRequirement.minTotalStaff,
+    dates,
+    masterData,
+    month,
+    requiredOverrideByTime
+  ]);
 
   const assignedStaffCountByDateAndClass = useMemo(() => {
     const countByDateAndClass = new Map<string, number[]>();
@@ -337,20 +526,21 @@ export default function HomePage() {
     const items: ShortageItem[] = [];
     for (const date of dates) {
       const assignedCounts = assignedTotalStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
-      effectiveRequiredStaffByTime.forEach((required, index) => {
+      const requiredCounts = effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
+      requiredCounts.forEach((requiredCount, index) => {
         const assigned = assignedCounts[index] ?? 0;
-        if (assigned < required.requiredCount) {
+        if (assigned < requiredCount) {
           items.push({
             date,
-            time: required.time,
-            required: required.requiredCount,
+            time: REQUIRED_STAFF_TIMES[index],
+            required: requiredCount,
             assigned
           });
         }
       });
     }
     return items;
-  }, [assignedTotalStaffCountByDate, dates, effectiveRequiredStaffByTime]);
+  }, [assignedTotalStaffCountByDate, dates, effectiveRequiredStaffCountByDate]);
 
   const assignedStaffCountByDateAndName = useMemo(() => {
     const countByDate = new Map<string, Map<string, number>>();
@@ -915,9 +1105,896 @@ export default function HomePage() {
     };
   }, [headerMenuColumnId]);
 
+  useEffect(() => {
+    if (plannerStep === 2 && viewMode !== "staff") {
+      setViewMode("staff");
+    }
+  }, [plannerStep, viewMode]);
+
+  const stepDefinitions = [
+    { id: 1 as PlannerStep, title: "対象月の確定" },
+    { id: 2 as PlannerStep, title: "休み入力（先生別）" },
+    { id: 3 as PlannerStep, title: "イベント入力" },
+    { id: 4 as PlannerStep, title: "ルール確認" },
+    { id: 5 as PlannerStep, title: "自動作成" }
+  ];
+
+  function stepCompleted(step: PlannerStep): boolean {
+    if (step === 1) {
+      return monthConfirmed;
+    }
+    if (step === 2) {
+      return offInputConfirmed;
+    }
+    if (step === 3) {
+      return eventInputConfirmed;
+    }
+    if (step === 4) {
+      return ruleConfirmed;
+    }
+    return false;
+  }
+
+  function currentStepCanProceed(): boolean {
+    if (plannerStep === 1) {
+      return monthConfirmed;
+    }
+    if (plannerStep === 2) {
+      return offInputConfirmed;
+    }
+    if (plannerStep === 3) {
+      return eventInputConfirmed;
+    }
+    if (plannerStep === 4) {
+      return ruleConfirmed;
+    }
+    return true;
+  }
+
+  function nextStep(): void {
+    if (plannerStep === 5) {
+      return;
+    }
+    if (!currentStepCanProceed()) {
+      const message =
+        plannerStep === 1
+          ? "対象月を確認して「この月で進める」をオンにしてください。"
+          : plannerStep === 2
+            ? "休み入力を確認して「休み入力が完了した」をオンにしてください。"
+            : plannerStep === 3
+              ? "イベント入力を確認して「イベント入力が完了した」をオンにしてください。"
+              : "ルール確認後に「ルール確認が完了した」をオンにしてください。";
+      alert(message);
+      return;
+    }
+    if (plannerStep === 1) {
+      setPlannerStep(2);
+      return;
+    }
+    if (plannerStep === 2) {
+      setPlannerStep(3);
+      return;
+    }
+    if (plannerStep === 3) {
+      setPlannerStep(4);
+      return;
+    }
+    if (plannerStep === 4) {
+      setPlannerStep(5);
+    }
+  }
+
+  function prevStep(): void {
+    if (plannerStep === 5) {
+      setPlannerStep(4);
+      return;
+    }
+    if (plannerStep === 4) {
+      setPlannerStep(3);
+      return;
+    }
+    if (plannerStep === 3) {
+      setPlannerStep(2);
+      return;
+    }
+    if (plannerStep === 2) {
+      setPlannerStep(1);
+    }
+  }
+
+  function handleMonthChange(value: string): void {
+    setMonth(value);
+    setMonthConfirmed(false);
+    setOffInputConfirmed(false);
+    setEventInputConfirmed(false);
+    setRuleConfirmed(false);
+    setAutoGenerateMessage("");
+    setAutoGenerateError("");
+    setAutoGenerateLogs([]);
+    setAutoStepSnapshots([]);
+    setAutoStepIndex(-1);
+    setPlannerStep(1);
+  }
+
+  function applyAutoStepSnapshot(index: number): void {
+    if (index < 0 || index >= autoStepSnapshots.length) {
+      return;
+    }
+    const snapshot = autoStepSnapshots[index];
+    setAutoStepIndex(index);
+    setCells(snapshot.cells);
+    setOffByDateAndStaff(snapshot.offByDateAndStaff);
+    setAutoGenerateLogs(snapshot.logs);
+    setAutoGenerateMessage(`ステップ表示: ${snapshot.label}（${snapshot.note}）`);
+    setViewMode("staff");
+  }
+
+  function weekDatesForSaturday(date: string): string[] {
+    const target = new Date(`${date}T00:00:00`);
+    if (Number.isNaN(target.getTime())) {
+      return [];
+    }
+    const day = target.getDay();
+    const mondayDiff = day === 0 ? -6 : 1 - day;
+    const monday = new Date(target);
+    monday.setDate(target.getDate() + mondayDiff);
+    return Array.from({ length: 6 }, (_, index) => {
+      const current = new Date(monday);
+      current.setDate(monday.getDate() + index);
+      if (current.getMonth() !== target.getMonth()) {
+        return "";
+      }
+      return `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, "0")}-${String(current.getDate()).padStart(2, "0")}`;
+    }).filter((item) => item.length > 0);
+  }
+
+  function removeStaffAssignmentFromDate(
+    sourceCells: Record<string, string>,
+    date: string,
+    staffName: string
+  ): { nextCells: Record<string, string>; removed: boolean; removedShiftTypes: string[] } {
+    const nextCells = { ...sourceCells };
+    let removed = false;
+    const removedShiftTypes: string[] = [];
+    for (const classGroup of SHIFT_CLASS_GROUPS) {
+      for (const column of shiftColumns) {
+        const cellKey = keyOf(date, column.id, classGroup.key);
+        if ((nextCells[cellKey] ?? "").trim() === staffName) {
+          delete nextCells[cellKey];
+          removed = true;
+          removedShiftTypes.push(column.shiftType);
+        }
+      }
+    }
+    return { nextCells, removed, removedShiftTypes };
+  }
+
+  function replaceStaffAssignmentForDate(
+    sourceCells: Record<string, string>,
+    date: string,
+    fromStaffName: string,
+    toStaffName: string
+  ): { nextCells: Record<string, string>; replaced: boolean; replacedShiftTypes: string[] } {
+    const nextCells = { ...sourceCells };
+    let replaced = false;
+    const replacedShiftTypes: string[] = [];
+    for (const classGroup of SHIFT_CLASS_GROUPS) {
+      for (const column of shiftColumns) {
+        const cellKey = keyOf(date, column.id, classGroup.key);
+        if ((nextCells[cellKey] ?? "").trim() === fromStaffName) {
+          nextCells[cellKey] = toStaffName;
+          replaced = true;
+          replacedShiftTypes.push(column.shiftType);
+        }
+      }
+    }
+    return { nextCells, replaced, replacedShiftTypes };
+  }
+
+  function assignedCountByTimeForDate(sourceCells: Record<string, string>, date: string): number[] {
+    return REQUIRED_STAFF_TIMES.map((time) => {
+      const targetMinutes = timeToMinutes(time);
+      const presentStaff = new Set<string>();
+      for (const classGroup of SHIFT_CLASS_GROUPS) {
+        for (const column of shiftColumns) {
+          const staffName = (sourceCells[keyOf(date, column.id, classGroup.key)] ?? "").trim();
+          if (!staffName) {
+            continue;
+          }
+          const pattern = shiftPatternByCode.get(column.shiftType);
+          if (!pattern) {
+            continue;
+          }
+          const startMinutes = timeToMinutes(pattern.startTime);
+          const endMinutes = timeToMinutes(pattern.endTime);
+          if (targetMinutes >= startMinutes && targetMinutes < endMinutes) {
+            presentStaff.add(staffName);
+          }
+        }
+      }
+      return presentStaff.size;
+    });
+  }
+
+  function shortageItemsForCells(sourceCells: Record<string, string>): ShortageItem[] {
+    const items: ShortageItem[] = [];
+    for (const date of dates) {
+      if (activeAutoGenerationPolicy.skipSundayProcessing && isSundayDate(date)) {
+        continue;
+      }
+      const assignedCounts = assignedCountByTimeForDate(sourceCells, date);
+      const requiredCounts = effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
+      requiredCounts.forEach((requiredCount, index) => {
+        const assigned = assignedCounts[index] ?? 0;
+        if (assigned < requiredCount) {
+          items.push({
+            date,
+            time: REQUIRED_STAFF_TIMES[index],
+            required: requiredCount,
+            assigned
+          });
+        }
+      });
+    }
+    return items;
+  }
+
+  async function handleAutoGenerateDraft(): Promise<void> {
+    if (autoGenerateRunningRef.current) {
+      return;
+    }
+    if (!(monthConfirmed && offInputConfirmed && eventInputConfirmed && ruleConfirmed)) {
+      setAutoGenerateError("Step1〜4を完了してから自動作成へ進んでください。");
+      return;
+    }
+    if (!masterData) {
+      setAutoGenerateError("マスターデータが未取得のため自動作成できません。");
+      return;
+    }
+    setAutoGenerateError("");
+    autoGenerateRunningRef.current = true;
+    setAutoGenerating(true);
+    // Ensure loading state is painted before heavy synchronous work starts.
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+    const executionLogs: AutoGenerateLogItem[] = [];
+    let logSequence = 0;
+    const nowText = (): string =>
+      new Date().toLocaleTimeString("ja-JP", {
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    const appendLog = (level: AutoGenerateLogLevel, step: string, message: string): void => {
+      logSequence += 1;
+      executionLogs.push({
+        id: `log-${Date.now()}-${logSequence}`,
+        sequence: logSequence,
+        time: nowText(),
+        level,
+        step,
+        message
+      });
+    };
+
+    try {
+      const rules: ShiftRules = masterData.shiftRules ?? createDefaultShiftRules();
+      const skipSundayProcessing = rules.autoGenerationPolicy.skipSundayProcessing;
+      const preventFixedFullTimeShift = rules.autoGenerationPolicy.preventFixedFullTimeShift;
+      const orderedRuleSteps = [...rules.creationOrder].sort((a, b) => a.order - b.order).map((item) => item.title);
+      const titleAt = (index: number, fallback: string): string => orderedRuleSteps[index] ?? fallback;
+
+      let nextCells: Record<string, string> = {};
+      const nextOffByDateAndStaff = { ...offByDateAndStaff };
+      const snapshots: AutoGenerationSnapshot[] = [];
+      const pushSnapshot = (id: string, label: string, note: string): void => {
+        snapshots.push({
+          id,
+          label,
+          note,
+          cells: { ...nextCells },
+          offByDateAndStaff: { ...nextOffByDateAndStaff },
+          logs: [...executionLogs]
+        });
+      };
+      const publishSnapshots = (preferredSnapshotId?: string): void => {
+        setAutoStepSnapshots(snapshots);
+        if (snapshots.length > 0) {
+          const targetIndex = preferredSnapshotId
+            ? Math.max(
+                0,
+                snapshots.findIndex((snapshot) => snapshot.id === preferredSnapshotId)
+              )
+            : 0;
+          const target = snapshots[targetIndex] ?? snapshots[0];
+          setAutoStepIndex(targetIndex);
+          setCells(target.cells);
+          setOffByDateAndStaff(target.offByDateAndStaff);
+          setAutoGenerateLogs(target.logs);
+          setViewMode("staff");
+          setAutoGenerateMessage(`ステップ表示: ${target.label}（${target.note}）`);
+        }
+      };
+      const fullTimeNames = masterData.fullTimeStaff.map((item) => item.name.trim()).filter((item) => item.length > 0);
+      const partStaff = masterData.partTimeStaff
+        .map((item) => ({ ...item, normalizedName: item.name.trim() }))
+        .filter((item) => item.normalizedName.length > 0);
+      const partTimeNames = partStaff.map((item) => item.normalizedName);
+      const staffPool = Array.from(new Set([...fullTimeNames, ...partTimeNames]));
+      const fullTimeSet = new Set(fullTimeNames);
+      const partByName = new Map(partStaff.map((item) => [item.normalizedName, item]));
+      const fullTimeShiftUsageByName = new Map<string, Map<string, number>>(
+        fullTimeNames.map((name) => [name, new Map<string, number>()])
+      );
+      const getFullTimeShiftUsageCount = (staffName: string, shiftType: string): number => {
+        return fullTimeShiftUsageByName.get(staffName)?.get(shiftType) ?? 0;
+      };
+      const incrementFullTimeShiftUsage = (staffName: string, shiftType: string): void => {
+        if (!fullTimeSet.has(staffName)) {
+          return;
+        }
+        const staffMap = fullTimeShiftUsageByName.get(staffName);
+        if (!staffMap) {
+          return;
+        }
+        staffMap.set(shiftType, (staffMap.get(shiftType) ?? 0) + 1);
+      };
+      const decrementFullTimeShiftUsage = (staffName: string, shiftType: string): void => {
+        if (!fullTimeSet.has(staffName)) {
+          return;
+        }
+        const staffMap = fullTimeShiftUsageByName.get(staffName);
+        if (!staffMap) {
+          return;
+        }
+        const current = staffMap.get(shiftType) ?? 0;
+        if (current <= 1) {
+          staffMap.delete(shiftType);
+          return;
+        }
+        staffMap.set(shiftType, current - 1);
+      };
+
+      const assignmentCountByStaff = new Map(staffPool.map((name) => [name, 0]));
+      const assignedByDate = new Map<string, Set<string>>(dates.map((date) => [date, new Set<string>()]));
+      const slotCapacityPerDate = shiftColumns.length * SHIFT_CLASS_GROUPS.length;
+      const requiredPeak = Math.max(
+        3,
+        ...dates.map((date) => Math.max(...(effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0))))
+      );
+      const targetByDate = new Map<string, number>();
+      const remainingByDate = new Map<string, number>();
+      const compensatoryQuotaByDate = new Map<string, number>();
+
+      let createdCount = 0;
+      let saturdayAssignedCount = 0;
+      let substituteHolidayCount = 0;
+      let unassignedSlotCount = 0;
+      let saturdayViolationCount = 0;
+
+      appendLog("info", "start", `自動作成を開始: 対象月 ${month}`);
+      appendLog(
+        "info",
+        "rules",
+        `登録順番: ${orderedRuleSteps.map((title, index) => `(${index + 1})${title}`).join(" -> ")}`
+      );
+      appendLog(
+        "info",
+        "rules",
+        `必要人数目安=${requiredPeak}人/日, 土曜必要人数=${rules.saturdayRequirement.minTotalStaff}, 振替休日(同週)=${
+          rules.compensatoryHoliday.sameWeekRequired ? "有効" : "無効"
+        }, 日曜除外=${skipSundayProcessing ? "有効" : "無効"}, 常勤固定シフト回避=${
+          preventFixedFullTimeShift ? "有効" : "無効"
+        }`
+      );
+
+      const shiftTypesByStart = shiftColumns
+        .map((column) => ({
+          shiftType: column.shiftType,
+          minutes: timeToMinutes(shiftPatternByCode.get(column.shiftType)?.startTime ?? "23:59")
+        }))
+        .sort((a, b) => a.minutes - b.minutes)
+        .map((item) => item.shiftType);
+
+      const earlyShift = shiftTypesByStart[0] ?? shiftColumns[0]?.shiftType ?? "";
+      const lateShift = shiftTypesByStart[shiftTypesByStart.length - 1] ?? shiftColumns[0]?.shiftType ?? "";
+      const middleShift = shiftTypesByStart[Math.floor(shiftTypesByStart.length / 2)] ?? earlyShift;
+      const findAssignableSlot = (
+        date: string,
+        staffName: string,
+        preferredShiftType?: string
+      ): { classGroup: ShiftClassGroup; column: ShiftColumn } | null => {
+        const preferredColumns = preferredShiftType
+          ? shiftColumns.filter((column) => column.shiftType === preferredShiftType)
+          : [];
+        const fallbackColumns = shiftColumns.filter((column) => !preferredColumns.some((item) => item.id === column.id));
+        const orderedColumns = [...preferredColumns, ...fallbackColumns];
+        const requiredByTime = effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
+        const currentCounts = assignedCountByTimeForDate(nextCells, date);
+        const shortages = requiredByTime.map((required, index) => Math.max(0, required - (currentCounts[index] ?? 0)));
+        const scoreForShiftType = (shiftType: string): number => {
+          const pattern = shiftPatternByCode.get(shiftType);
+          if (!pattern) {
+            return 0;
+          }
+          const startMinutes = timeToMinutes(pattern.startTime);
+          const endMinutes = timeToMinutes(pattern.endTime);
+          let score = 0;
+          REQUIRED_STAFF_TIMES.forEach((time, index) => {
+            const targetMinutes = timeToMinutes(time);
+            if (targetMinutes >= startMinutes && targetMinutes < endMinutes) {
+              score += shortages[index] ?? 0;
+            }
+          });
+          return score;
+        };
+
+        let best:
+          | { classGroup: ShiftClassGroup; column: ShiftColumn; score: number; bonus: number; usage: number }
+          | null = null;
+        for (const classGroup of SHIFT_CLASS_GROUPS) {
+          for (const column of orderedColumns) {
+            const cellKey = keyOf(date, column.id, classGroup.key);
+            if ((nextCells[cellKey] ?? "").trim().length > 0) {
+              continue;
+            }
+            if (!canWorkOnShift(date, column.shiftType, staffName)) {
+              continue;
+            }
+            const baseScore = scoreForShiftType(column.shiftType);
+            const bonus = preferredShiftType && column.shiftType === preferredShiftType ? 1 : 0;
+            const usage =
+              preventFixedFullTimeShift && fullTimeSet.has(staffName) ? getFullTimeShiftUsageCount(staffName, column.shiftType) : 0;
+            const usagePenalty = preventFixedFullTimeShift && fullTimeSet.has(staffName) ? usage * 0.35 : 0;
+            const score = baseScore + bonus - usagePenalty;
+            if (
+              !best ||
+              score > best.score ||
+              (score === best.score && bonus > best.bonus) ||
+              (score === best.score && bonus === best.bonus && usage < best.usage)
+            ) {
+              best = { classGroup: classGroup.key, column, score, bonus, usage };
+            }
+          }
+        }
+        if (!best || best.score <= 0) {
+          return null;
+        }
+        return { classGroup: best.classGroup, column: best.column };
+      };
+
+      for (const date of dates) {
+        if (skipSundayProcessing && isSundayDate(date)) {
+          targetByDate.set(date, 0);
+          remainingByDate.set(date, 0);
+          compensatoryQuotaByDate.set(date, 0);
+          appendLog("info", "capacity", `${date}: 日曜除外ルールにより処理対象外`);
+          continue;
+        }
+        const day = new Date(`${date}T00:00:00`).getDay();
+        const isSaturday = day === 6;
+        const requiredForDate = Math.max(
+          1,
+          ...(effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)),
+          isSaturday && rules.saturdayRequirement.enabled ? rules.saturdayRequirement.minTotalStaff : 0
+        );
+        const availableCount = staffPool.filter(
+          (name) => !nextOffByDateAndStaff[`${date}|${name}`] && shiftColumns.some((column) => canWorkOnShift(date, column.shiftType, name))
+        ).length;
+        const targetCount = Math.max(1, Math.min(requiredForDate, slotCapacityPerDate));
+        const maxAssignableCount = Math.max(0, Math.min(availableCount, slotCapacityPerDate));
+        targetByDate.set(date, targetCount);
+        remainingByDate.set(date, maxAssignableCount);
+        compensatoryQuotaByDate.set(date, Math.max(0, maxAssignableCount - targetCount));
+        if (maxAssignableCount < requiredForDate) {
+          appendLog(
+            "warn",
+            "capacity",
+            `${date}: 必要目安${requiredForDate}人に対して、割当可能上限は${maxAssignableCount}人（可用${availableCount} / 枠${slotCapacityPerDate}）`
+          );
+        } else {
+          appendLog("info", "capacity", `${date}: 必要目安${requiredForDate}人 / 時間帯充足に向け最大${maxAssignableCount}人まで割当可能`);
+        }
+      }
+
+      appendLog("info", "step-1", `${titleAt(0, "休みを入力")}: 休み入力 ${Object.keys(nextOffByDateAndStaff).length} 件を固定`);
+      appendLog("info", "step-2", `${titleAt(1, "イベントを入力")}: イベント入力 ${eventInputCount} 日を反映`);
+      pushSnapshot("step-1-2", "Step1-2 休み/イベント反映", "手入力情報を固定した状態");
+
+      const runAssignmentPhase = (
+        stepLabel: string,
+        ruleTitle: string,
+        staffCandidates: string[],
+        preferredShiftResolver: (name: string) => string,
+        maxAssignmentsPerDateResolver: (date: string) => number
+      ): void => {
+        appendLog("info", stepLabel, `${ruleTitle}: 割当フェーズを開始（候補 ${staffCandidates.length} 名）`);
+        for (const date of dates) {
+          if (skipSundayProcessing && isSundayDate(date)) {
+            continue;
+          }
+          const phaseMaxAssignments = Math.max(0, maxAssignmentsPerDateResolver(date));
+          let phaseAssigned = 0;
+          let guard = 0;
+          while ((remainingByDate.get(date) ?? 0) > 0 && phaseAssigned < phaseMaxAssignments && guard < slotCapacityPerDate * 2) {
+            guard += 1;
+            const hasTimeShortage = shortageItemsForCells(nextCells).some((item) => item.date === date);
+            if (!hasTimeShortage) {
+              break;
+            }
+            const assignedNames = assignedByDate.get(date) ?? new Set<string>();
+            const availableCandidates = staffCandidates
+              .filter((name) => !assignedNames.has(name))
+              .filter((name) => !nextOffByDateAndStaff[`${date}|${name}`])
+              .filter((name) => shiftColumns.some((column) => canWorkOnShift(date, column.shiftType, name)));
+
+            if (availableCandidates.length === 0) {
+              break;
+            }
+
+            const selectedName = [...availableCandidates].sort((a, b) => {
+              const aCount = assignmentCountByStaff.get(a) ?? 0;
+              const bCount = assignmentCountByStaff.get(b) ?? 0;
+              if (aCount !== bCount) {
+                return aCount - bCount;
+              }
+              if (preventFixedFullTimeShift) {
+                const aPreferredShift = preferredShiftResolver(a);
+                const bPreferredShift = preferredShiftResolver(b);
+                const aUsage = fullTimeSet.has(a) ? getFullTimeShiftUsageCount(a, aPreferredShift) : 0;
+                const bUsage = fullTimeSet.has(b) ? getFullTimeShiftUsageCount(b, bPreferredShift) : 0;
+                if (aUsage !== bUsage) {
+                  return aUsage - bUsage;
+                }
+              }
+              return a.localeCompare(b, "ja");
+            })[0];
+
+            const preferredShift = preferredShiftResolver(selectedName);
+            const targetSlot = findAssignableSlot(date, selectedName, preferredShift);
+            if (!targetSlot) {
+              const nextCandidates = availableCandidates.filter((name) => name !== selectedName);
+              if (nextCandidates.length === 0) {
+                appendLog("warn", stepLabel, `${date}: 時間帯不足を埋める配置候補が見つからずフェーズを終了`);
+                break;
+              }
+              continue;
+            }
+
+            nextCells[keyOf(date, targetSlot.column.id, targetSlot.classGroup)] = selectedName;
+            assignedNames.add(selectedName);
+            assignedByDate.set(date, assignedNames);
+            incrementFullTimeShiftUsage(selectedName, targetSlot.column.shiftType);
+            remainingByDate.set(date, Math.max(0, (remainingByDate.get(date) ?? 0) - 1));
+            phaseAssigned += 1;
+            createdCount += 1;
+            const nextCount = (assignmentCountByStaff.get(selectedName) ?? 0) + 1;
+            assignmentCountByStaff.set(selectedName, nextCount);
+
+            const reasonParts = [
+              `ルール=${ruleTitle}`,
+              fullTimeSet.has(selectedName) ? "区分=常勤" : "区分=パート",
+              `月内割当=${nextCount}回`,
+              `フェーズ内=${phaseAssigned}/${phaseMaxAssignments}`,
+              `残自動枠=${remainingByDate.get(date) ?? 0}人`
+            ];
+            if (preventFixedFullTimeShift && fullTimeSet.has(selectedName)) {
+              const shiftUsageCount = getFullTimeShiftUsageCount(selectedName, targetSlot.column.shiftType);
+              reasonParts.push(`同シフト回数=${shiftUsageCount}回`);
+            }
+            const weeklyDays = partByName.get(selectedName)?.weeklyDays;
+            if (weeklyDays) {
+              reasonParts.push(`週勤務目安=${weeklyDays}回`);
+            }
+            appendLog(
+              "info",
+              stepLabel,
+              `${date} ${targetSlot.column.shiftType}: ${selectedName} を配置（${reasonParts.join(" / ")}）`
+            );
+          }
+          if (phaseAssigned >= phaseMaxAssignments && (remainingByDate.get(date) ?? 0) > 0) {
+            appendLog("info", stepLabel, `${date}: フェーズ割当上限 ${phaseMaxAssignments} 件に達したため次フェーズへ移行`);
+          }
+        }
+      };
+
+      const partPriorityNames = partStaff
+        .filter((staff) => staff.weeklyDays >= 4)
+        .map((staff) => staff.normalizedName);
+      const partWeeklyNames = partStaff
+        .filter((staff) => staff.weeklyDays > 0)
+        .sort((a, b) => b.weeklyDays - a.weeklyDays)
+        .map((staff) => staff.normalizedName);
+
+      runAssignmentPhase(
+        "step-3",
+        titleAt(2, "パートさんでほぼ入れる人を入れる"),
+        partPriorityNames,
+        (name) => partByName.get(name)?.defaultShiftPatternCode ?? middleShift,
+        (date) => Math.min(partPriorityNames.length, Math.max(2, Math.ceil((targetByDate.get(date) ?? 0) * 0.3)))
+      );
+      pushSnapshot("step-3", "Step3 パート優先配置", titleAt(2, "パートさんでほぼ入れる人を入れる"));
+      runAssignmentPhase(
+        "step-4",
+        titleAt(3, "常勤の早番を入れる"),
+        fullTimeNames,
+        () => earlyShift,
+        (date) => Math.max(2, Math.ceil((targetByDate.get(date) ?? 0) * 0.35))
+      );
+      pushSnapshot("step-4", "Step4 常勤早番配置", titleAt(3, "常勤の早番を入れる"));
+      runAssignmentPhase(
+        "step-5",
+        titleAt(4, "常勤の遅番を入れる"),
+        fullTimeNames,
+        () => lateShift,
+        (date) => Math.max(2, Math.ceil((targetByDate.get(date) ?? 0) * 0.35))
+      );
+      pushSnapshot("step-5", "Step5 常勤遅番配置", titleAt(4, "常勤の遅番を入れる"));
+      runAssignmentPhase(
+        "step-6",
+        titleAt(5, "週◯回のパートさんを入れる"),
+        partWeeklyNames,
+        (name) => partByName.get(name)?.defaultShiftPatternCode ?? middleShift,
+        (date) => Math.max(1, Math.ceil((targetByDate.get(date) ?? 0) * 0.2))
+      );
+      pushSnapshot("step-6", "Step6 週回数パート配置", titleAt(5, "週◯回のパートさんを入れる"));
+      runAssignmentPhase(
+        "step-7",
+        titleAt(6, "常勤で調整する"),
+        fullTimeNames,
+        () => middleShift,
+        (date) => targetByDate.get(date) ?? 0
+      );
+      pushSnapshot("step-7", "Step7 常勤調整", titleAt(6, "常勤で調整する"));
+
+      if (rules.compensatoryHoliday.enabled && rules.compensatoryHoliday.sameWeekRequired) {
+        for (const date of dates) {
+          const weekday = new Date(`${date}T00:00:00`).getDay();
+          if (weekday !== 6) {
+            continue;
+          }
+          const saturdayStaff = Array.from(assignedByDate.get(date) ?? []);
+          const unresolvedStaffNames: string[] = [];
+          for (const staffName of saturdayStaff) {
+            const weekDates = weekDatesForSaturday(date).filter((candidateDate) => candidateDate !== date);
+            const candidateDates = weekDates
+              .filter((candidateDate) => {
+                const day = new Date(`${candidateDate}T00:00:00`).getDay();
+                return day >= 1 && day <= 5;
+              })
+              .sort((a, b) => (remainingByDate.get(b) ?? 0) - (remainingByDate.get(a) ?? 0));
+            let secured = false;
+            for (const candidateDate of candidateDates) {
+              const key = `${candidateDate}|${staffName}`;
+              if (nextOffByDateAndStaff[key]) {
+                continue;
+              }
+              const removedResult = removeStaffAssignmentFromDate(nextCells, candidateDate, staffName);
+              const quota = compensatoryQuotaByDate.get(candidateDate) ?? 0;
+              const canUseQuota = quota > 0;
+              const canRemoveWithoutShortage =
+                removedResult.removed &&
+                !shortageItemsForCells(removedResult.nextCells).some((item) => item.date === candidateDate);
+
+              if (canUseQuota && (!removedResult.removed || canRemoveWithoutShortage)) {
+                nextOffByDateAndStaff[key] = true;
+                compensatoryQuotaByDate.set(candidateDate, Math.max(0, quota - 1));
+                nextCells = removedResult.nextCells;
+                if (removedResult.removed) {
+                  const assignedNames = assignedByDate.get(candidateDate) ?? new Set<string>();
+                  assignedNames.delete(staffName);
+                  assignedByDate.set(candidateDate, assignedNames);
+                  remainingByDate.set(candidateDate, (remainingByDate.get(candidateDate) ?? 0) + 1);
+                  assignmentCountByStaff.set(staffName, Math.max(0, (assignmentCountByStaff.get(staffName) ?? 0) - 1));
+                  for (const removedShiftType of removedResult.removedShiftTypes) {
+                    decrementFullTimeShiftUsage(staffName, removedShiftType);
+                  }
+                }
+                substituteHolidayCount += 1;
+                appendLog(
+                  "info",
+                  "compensatory-holiday",
+                  `${staffName}: ${date} 土曜勤務の振替として ${candidateDate} を休みに設定（同週振替ルール / 日次余力を使用）`
+                );
+                secured = true;
+                break;
+              }
+
+              if (!removedResult.removed || removedResult.removedShiftTypes.length !== 1) {
+                continue;
+              }
+              const targetShiftType = removedResult.removedShiftTypes[0];
+              const assignedNames = assignedByDate.get(candidateDate) ?? new Set<string>();
+              const replacementCandidates = staffPool
+                .filter((name) => name !== staffName)
+                .filter((name) => !assignedNames.has(name))
+                .filter((name) => !nextOffByDateAndStaff[`${candidateDate}|${name}`])
+                .filter((name) => canWorkOnShift(candidateDate, targetShiftType, name))
+                .sort((a, b) => {
+                  const aCount = assignmentCountByStaff.get(a) ?? 0;
+                  const bCount = assignmentCountByStaff.get(b) ?? 0;
+                  if (aCount !== bCount) {
+                    return aCount - bCount;
+                  }
+                  if (preventFixedFullTimeShift) {
+                    const aUsage = fullTimeSet.has(a) ? getFullTimeShiftUsageCount(a, targetShiftType) : 0;
+                    const bUsage = fullTimeSet.has(b) ? getFullTimeShiftUsageCount(b, targetShiftType) : 0;
+                    if (aUsage !== bUsage) {
+                      return aUsage - bUsage;
+                    }
+                  }
+                  return a.localeCompare(b, "ja");
+                });
+              const replacementName = replacementCandidates[0];
+              if (!replacementName) {
+                continue;
+              }
+
+              const replacedResult = replaceStaffAssignmentForDate(nextCells, candidateDate, staffName, replacementName);
+              if (!replacedResult.replaced) {
+                continue;
+              }
+              nextCells = replacedResult.nextCells;
+              nextOffByDateAndStaff[key] = true;
+              assignedNames.delete(staffName);
+              assignedNames.add(replacementName);
+              assignedByDate.set(candidateDate, assignedNames);
+              assignmentCountByStaff.set(staffName, Math.max(0, (assignmentCountByStaff.get(staffName) ?? 0) - 1));
+              assignmentCountByStaff.set(replacementName, (assignmentCountByStaff.get(replacementName) ?? 0) + 1);
+              for (const shiftType of replacedResult.replacedShiftTypes) {
+                decrementFullTimeShiftUsage(staffName, shiftType);
+                incrementFullTimeShiftUsage(replacementName, shiftType);
+              }
+              substituteHolidayCount += 1;
+              appendLog(
+                "info",
+                "compensatory-holiday",
+                `${staffName}: ${date} 土曜勤務の振替として ${candidateDate} を休みに設定（${replacementName} が ${targetShiftType} を代替）`
+              );
+              secured = true;
+              break;
+            }
+
+            if (!secured) {
+              unresolvedStaffNames.push(staffName);
+            }
+          }
+          if (unresolvedStaffNames.length > 0) {
+            const preview = unresolvedStaffNames.slice(0, 4).join("、");
+            appendLog(
+              "warn",
+              "compensatory-holiday",
+              `${date} 土曜勤務者のうち ${unresolvedStaffNames.length} 名は同週振替を確保できませんでした（例: ${preview}${
+                unresolvedStaffNames.length > 4 ? " など" : ""
+              }）`
+            );
+          }
+        }
+      }
+      pushSnapshot("compensatory", "振替休日反映", "同週振替ルールの反映後");
+
+      runAssignmentPhase(
+        "step-7b",
+        `${titleAt(6, "常勤で調整する")}（振替後再調整）`,
+        [...partWeeklyNames, ...fullTimeNames],
+        () => middleShift,
+        (date) => targetByDate.get(date) ?? 0
+      );
+      pushSnapshot("step-7b", "最終再調整", "振替後の不足再調整");
+
+      for (const date of dates) {
+        if (skipSundayProcessing && isSundayDate(date)) {
+          appendLog("info", "daily-summary", `${date}: 日曜除外ルールにより集計対象外`);
+          continue;
+        }
+        const assignedCount = (assignedByDate.get(date) ?? new Set<string>()).size;
+        const targetCount = targetByDate.get(date) ?? 0;
+        const shortage = Math.max(0, targetCount - assignedCount);
+        if (shortage > 0) {
+          unassignedSlotCount += shortage;
+          appendLog("warn", "daily-summary", `${date}: 必要目安 ${targetCount}人 / 配置 ${assignedCount}人 / 不足 ${shortage}人`);
+        } else {
+          appendLog("info", "daily-summary", `${date}: 必要目安 ${targetCount}人 / 配置 ${assignedCount}人 / 不足 0人`);
+        }
+        const weekday = new Date(`${date}T00:00:00`).getDay();
+        if (weekday === 6) {
+          saturdayAssignedCount += assignedCount;
+          if (rules.saturdayRequirement.enabled && assignedCount < rules.saturdayRequirement.minTotalStaff) {
+            saturdayViolationCount += 1;
+            appendLog(
+              "warn",
+              "saturday-rule",
+              `${date}: 土曜必要人数 ${rules.saturdayRequirement.minTotalStaff}人に対して ${assignedCount}人（違反）`
+            );
+          }
+        }
+      }
+
+      const staffLoadSummary = Array.from(assignmentCountByStaff.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, count]) => `${name}:${count}`)
+        .join(" / ");
+      appendLog("info", "analysis", `職員別割当回数: ${staffLoadSummary}`);
+      pushSnapshot("analysis", "分析結果", "日次集計まで反映");
+
+      const timeBasedShortages = shortageItemsForCells(nextCells);
+      if (timeBasedShortages.length > 0) {
+        const preview = timeBasedShortages.slice(0, 20);
+        for (const item of preview) {
+          appendLog(
+            "warn",
+            "hard-rule-time",
+            `${item.date} ${item.time}: 必要${item.required}人 / 配置${item.assigned}人（不足${item.required - item.assigned}）`
+          );
+        }
+        if (timeBasedShortages.length > preview.length) {
+          appendLog(
+            "warn",
+            "hard-rule-time",
+            `時間帯不足ログを省略: 残り ${timeBasedShortages.length - preview.length} 件`
+          );
+        }
+        appendLog(
+          "warn",
+          "hard-rule",
+          `絶対ルール違反: 時間帯ベースの必要人数未達が ${timeBasedShortages.length} 件あります。下書きは反映しません。`
+        );
+        setAutoGenerateError(
+          `時間帯ベースの必要人数未達が ${timeBasedShortages.length} 件あるため、自動作成結果は反映していません。`
+        );
+        pushSnapshot("hard-rule-failed", "絶対ルール違反", "時間帯不足のため反映不可");
+        publishSnapshots("hard-rule-failed");
+        return;
+      }
+
+      if (unassignedSlotCount > 0) {
+        appendLog(
+          "warn",
+          "soft-rule",
+          `日次目標ベースで未充足が ${unassignedSlotCount} 件あります（時間帯ベース必須条件は満たしています）。`
+        );
+      }
+
+      const totalTargetCount = Array.from(targetByDate.values()).reduce((sum, value) => sum + value, 0);
+      const finalAssignedCount = Array.from(assignedByDate.values()).reduce((sum, value) => sum + value.size, 0);
+      const summary = `下書きを作成しました（必要目安 ${totalTargetCount} 件 / 配置 ${finalAssignedCount} 件 / 未充足 ${unassignedSlotCount} 件 / 土曜違反 ${saturdayViolationCount} 日）`;
+      appendLog(
+        "info",
+        "finish",
+        `完了: 必要目安 ${totalTargetCount} 件, 配置 ${finalAssignedCount} 件, 未充足 ${unassignedSlotCount} 件, 土曜配置 ${saturdayAssignedCount} 件, 振替休日 ${substituteHolidayCount} 件, 土曜違反 ${saturdayViolationCount} 日（割当アクション ${createdCount} 件）`
+      );
+      pushSnapshot("finish", "最終下書き", summary);
+      publishSnapshots("finish");
+      setAutoGenerateMessage(`ステップ下書きを作成しました。前/次ボタンで1ステップずつ反映を確認できます。${summary}`);
+      showToast(summary);
+    } catch (error) {
+      setAutoGenerateError(error instanceof Error ? error.message : "下書き作成に失敗しました。");
+      appendLog("warn", "error", error instanceof Error ? error.message : "下書き作成に失敗しました。");
+      setAutoGenerateLogs(executionLogs);
+    } finally {
+      setAutoGenerating(false);
+      autoGenerateRunningRef.current = false;
+    }
+  }
+
   return (
     <>
       {loadingData || loadingMasterData ? <FullscreenLoading /> : null}
+      {autoGenerating ? (
+        <div className="sticky top-2 z-20 mx-4 rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-800 shadow-sm md:mx-6">
+          <span className="inline-flex items-center gap-2 font-semibold">
+            <span
+              className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-orange-300 border-t-orange-600"
+              aria-hidden="true"
+            />
+            自動作成中です。完了までお待ちください...
+          </span>
+        </div>
+      ) : null}
       <main className="space-y-4 p-4 md:p-6">
         <section className="rounded-xl bg-white p-2 shadow-sm md:p-3">
         <div className="flex flex-wrap items-end justify-between gap-3">
@@ -932,7 +2009,7 @@ export default function HomePage() {
                 type="month"
                 className="ml-2 rounded-md bg-orange-50 px-2 py-1"
                 value={month}
-                onChange={(event) => setMonth(event.target.value)}
+                onChange={(event) => handleMonthChange(event.target.value)}
               />
             </label>
             <button
@@ -954,21 +2031,228 @@ export default function HomePage() {
         </section>
 
         <section className="rounded-xl bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-orange-900">作成ステップ</h2>
+              <p className="text-sm text-orange-700">園長先生向けに、手順を1つずつ進めながら自動作成の準備を行います。</p>
+            </div>
+            <p className="rounded-md bg-orange-100 px-3 py-1 text-sm font-semibold text-orange-800">
+              現在: Step {plannerStep} / 5
+            </p>
+          </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-5">
+            {stepDefinitions.map((step) => {
+              const active = plannerStep === step.id;
+              const completed = stepCompleted(step.id);
+              return (
+                <button
+                  key={step.id}
+                  className={`rounded-md border px-3 py-2 text-left text-sm ${
+                    active
+                      ? "border-orange-400 bg-orange-100 text-orange-900"
+                      : completed
+                        ? "border-green-300 bg-green-50 text-green-800"
+                        : "border-orange-200 bg-white text-orange-700"
+                  }`}
+                  onClick={() => setPlannerStep(step.id)}
+                >
+                  <div className="text-xs font-semibold">Step {step.id}</div>
+                  <div className="mt-1 font-medium">{step.title}</div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mt-4 rounded-lg bg-orange-50 p-3">
+            {plannerStep === 1 ? (
+              <label className="flex items-center gap-2 text-sm text-orange-900">
+                <input
+                  className="orange-checkbox"
+                  type="checkbox"
+                  checked={monthConfirmed}
+                  onChange={(event) => setMonthConfirmed(event.target.checked)}
+                />
+                この月（{month}）で作成を進める
+              </label>
+            ) : null}
+            {plannerStep === 2 ? (
+              <label className="flex items-center gap-2 text-sm text-orange-900">
+                <input
+                  className="orange-checkbox"
+                  type="checkbox"
+                  checked={offInputConfirmed}
+                  onChange={(event) => setOffInputConfirmed(event.target.checked)}
+                />
+                休み入力が完了した（入力済み: {offRecordCount}件）
+              </label>
+            ) : null}
+            {plannerStep === 3 ? (
+              <label className="flex items-center gap-2 text-sm text-orange-900">
+                <input
+                  className="orange-checkbox"
+                  type="checkbox"
+                  checked={eventInputConfirmed}
+                  onChange={(event) => setEventInputConfirmed(event.target.checked)}
+                />
+                イベント入力が完了した（入力済み: {eventInputCount}日）
+              </label>
+            ) : null}
+            {plannerStep === 4 ? (
+              <div className="space-y-2">
+                <p className="text-sm text-orange-900">自動作成前に、土曜人数・振替休日・作成順序のルールを確認してください。</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Link href="/data/shift-rules" className="rounded-md bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200">
+                    シフトルール管理を開く
+                  </Link>
+                  <label className="flex items-center gap-2 text-sm text-orange-900">
+                    <input
+                      className="orange-checkbox"
+                      type="checkbox"
+                      checked={ruleConfirmed}
+                      onChange={(event) => setRuleConfirmed(event.target.checked)}
+                    />
+                    ルール確認が完了した
+                  </label>
+                </div>
+              </div>
+            ) : null}
+            {plannerStep === 5 ? (
+              <div className="space-y-2">
+                <p className="text-sm text-orange-900">準備が完了したので、自動作成を実行します。</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-60"
+                    onClick={() => handleAutoGenerateDraft()}
+                    disabled={autoGenerating}
+                  >
+                    {autoGenerating ? (
+                      <span className="inline-flex items-center gap-2">
+                        <span
+                          className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white"
+                          aria-hidden="true"
+                        />
+                        自動作成中...
+                      </span>
+                    ) : (
+                      "自動作成を実行（下書き）"
+                    )}
+                  </button>
+                  <button
+                    className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200 disabled:opacity-60"
+                    onClick={() => {
+                      setAutoStepSnapshots([]);
+                      setAutoStepIndex(-1);
+                    }}
+                    disabled={autoGenerating || autoStepSnapshots.length === 0}
+                  >
+                    ステップ下書きをクリア
+                  </button>
+                </div>
+                {autoStepSnapshots.length > 0 ? (
+                  <div className="rounded-md border border-orange-200 bg-orange-50 p-3">
+                    <p className="text-sm font-semibold text-orange-900">
+                      自動作成ステップ確認: {autoStepIndex + 1} / {autoStepSnapshots.length}
+                    </p>
+                    <p className="mt-1 text-sm text-orange-800">
+                      {autoStepIndex >= 0 ? autoStepSnapshots[autoStepIndex]?.label : ""}{" "}
+                      {autoStepIndex >= 0 ? `- ${autoStepSnapshots[autoStepIndex]?.note}` : ""}
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <button
+                        className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200 disabled:opacity-50"
+                        onClick={() => applyAutoStepSnapshot(Math.max(0, autoStepIndex - 1))}
+                        disabled={autoStepIndex <= 0}
+                      >
+                        前の自動ステップを反映
+                      </button>
+                      <button
+                        className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-50"
+                        onClick={() => applyAutoStepSnapshot(Math.min(autoStepSnapshots.length - 1, autoStepIndex + 1))}
+                        disabled={autoStepIndex >= autoStepSnapshots.length - 1}
+                      >
+                        次の自動ステップを反映
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            {autoGenerateMessage ? (
+              <p className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{autoGenerateMessage}</p>
+            ) : null}
+            {autoGenerateError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{autoGenerateError}</p> : null}
+            {autoGenerateLogs.length > 0 ? (
+              <div className="rounded-md border border-orange-200 bg-white">
+                <div className="flex items-center justify-between border-b border-orange-100 px-3 py-2">
+                  <p className="text-sm font-semibold text-orange-900">自動作成ログ</p>
+                  <p className="text-xs text-orange-700">{autoGenerateLogs.length}件</p>
+                </div>
+                <div className="max-h-72 overflow-auto px-3 py-2">
+                  <p className="mb-2 text-xs text-orange-700">先生向けにわかりやすい表現で表示しています。</p>
+                  <ul className="space-y-1">
+                    {autoGenerateLogs.map((log) => (
+                      <li
+                        key={log.id}
+                        className={`rounded px-2 py-1 text-xs ${
+                          log.level === "warn" ? "bg-red-50 text-red-700" : "bg-orange-50 text-orange-800"
+                        }`}
+                      >
+                        {`${String(log.sequence).padStart(3, "0")} ${log.time} [${teacherFriendlyStepLabel(log.step)}] ${teacherFriendlyMessage(log)}`}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-3 flex justify-end gap-2">
+            <button
+              className="rounded-md bg-orange-100 px-3 py-1.5 text-sm text-orange-700 hover:bg-orange-200 disabled:opacity-50"
+              onClick={() => prevStep()}
+              disabled={plannerStep === 1}
+            >
+              前のステップ
+            </button>
+            <button
+              className="rounded-md bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-50"
+              onClick={() => nextStep()}
+              disabled={plannerStep === 5}
+            >
+              次のステップ
+            </button>
+          </div>
+        </section>
+
+        <section className="rounded-xl bg-white p-4 shadow-sm">
           <p className="text-sm text-orange-700">
-            必要先生人数は、各時刻について曜日別に算出した人数の最大値を表示しています。
+            必要先生人数の判定は日付ごと（曜日別）に行います。土曜日は土曜ルールの必要人数を適用します。
+          </p>
+          <p className="mt-1 text-sm text-orange-700">
+            上段の必要人数入力は「全日共通の上書き値」です。必要に応じて調整できます。
+          </p>
+          <p className="mt-1 text-sm text-orange-700">
+            {plannerStep === 2
+              ? "Step2: 先生別表示で休みを入力してください。"
+              : plannerStep === 3
+                ? "Step3: イベント欄を入力してください。"
+                : plannerStep === 5
+                  ? "Step5: 内容確認後に自動作成（下書き）を実行してください。"
+                  : "必要に応じてクラス別 / 先生別を切り替えて編集できます。"}
           </p>
           <div className="mt-3 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <button
-                className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
+                className={`rounded-md px-3 py-1.5 text-sm font-semibold disabled:opacity-50 ${
                   viewMode === "class" ? "bg-orange-500 text-white" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
                 }`}
                 onClick={() => setViewMode("class")}
+                disabled={plannerStep === 2}
               >
                 クラス別表示
               </button>
               <button
-                className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
+                className={`rounded-md px-3 py-1.5 text-sm font-semibold disabled:opacity-50 ${
                   viewMode === "staff" ? "bg-orange-500 text-white" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
                 }`}
                 onClick={() => setViewMode("staff")}
@@ -1239,7 +2523,9 @@ export default function HomePage() {
                             <td
                               key={`${date}-total-${REQUIRED_STAFF_TIMES[columnIndex]}`}
                               className={`whitespace-nowrap px-2 py-1.5 text-center font-semibold ${
-                                count < (effectiveRequiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
+                                count < ((effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0))[columnIndex] ?? 0)
+                                  ? "text-red-600"
+                                  : "text-orange-900"
                               } ${summaryStripeClass(columnIndex)}`}
                             >
                               {count}人
@@ -1387,7 +2673,9 @@ export default function HomePage() {
                           <td
                             key={`staff-total-${date}-${REQUIRED_STAFF_TIMES[columnIndex]}`}
                             className={`h-9 whitespace-nowrap px-2 py-0 text-center align-middle font-semibold ${
-                              count < (effectiveRequiredStaffByTime[columnIndex]?.requiredCount ?? 0) ? "text-red-600" : "text-orange-900"
+                              count < ((effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0))[columnIndex] ?? 0)
+                                ? "text-red-600"
+                                : "text-orange-900"
                             } ${bodyStripeClass(columnIndex)}`}
                           >
                             {count}人

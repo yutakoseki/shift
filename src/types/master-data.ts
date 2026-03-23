@@ -51,6 +51,44 @@ export type NurseryClass = {
   ageGroup: string;
 };
 
+export type SaturdayStaffCombination = {
+  partTimeCount: number;
+  fullTimeCount: number;
+};
+
+export type ShiftRuleSaturdayRequirement = {
+  enabled: boolean;
+  minTotalStaff: number;
+  combinations: SaturdayStaffCombination[];
+};
+
+export type ShiftRuleCompensatoryHoliday = {
+  enabled: boolean;
+  sameWeekRequired: boolean;
+  description: string;
+};
+
+export type ShiftRuleCreationStep = {
+  id: string;
+  order: number;
+  title: string;
+};
+
+export type ShiftAutoGenerationPolicy = {
+  useProgrammaticLogic: boolean;
+  useAi: boolean;
+  skipSundayProcessing: boolean;
+  preventFixedFullTimeShift: boolean;
+  description: string;
+};
+
+export type ShiftRules = {
+  saturdayRequirement: ShiftRuleSaturdayRequirement;
+  compensatoryHoliday: ShiftRuleCompensatoryHoliday;
+  creationOrder: ShiftRuleCreationStep[];
+  autoGenerationPolicy: ShiftAutoGenerationPolicy;
+};
+
 export type MasterData = {
   fullTimeStaff: FullTimeStaff[];
   partTimeStaff: PartTimeStaff[];
@@ -58,6 +96,7 @@ export type MasterData = {
   shiftPatterns: ShiftPattern[];
   childRatios: ChildRatio[];
   nurseryClasses: NurseryClass[];
+  shiftRules: ShiftRules;
   updatedAt: string;
 };
 
@@ -156,7 +195,87 @@ export function normalizeMasterData(data: MasterData): MasterData {
   return {
     ...data,
     children: (data.children ?? []).map((child) => normalizeChildProfile(child)),
-    nurseryClasses: normalizedClasses
+    nurseryClasses: normalizedClasses,
+    shiftRules: normalizeShiftRules(data.shiftRules)
+  };
+}
+
+function normalizeShiftRules(input: ShiftRules | undefined): ShiftRules {
+  const defaults = createDefaultShiftRules();
+  if (!input) {
+    return defaults;
+  }
+
+  const normalizedCombinations = Array.isArray(input.saturdayRequirement?.combinations)
+    ? input.saturdayRequirement.combinations
+        .filter(
+          (item) =>
+            Number.isFinite(item?.partTimeCount) &&
+            Number.isFinite(item?.fullTimeCount) &&
+            item.partTimeCount >= 0 &&
+            item.fullTimeCount >= 0
+        )
+        .map((item) => ({
+          partTimeCount: Math.max(0, Math.floor(item.partTimeCount)),
+          fullTimeCount: Math.max(0, Math.floor(item.fullTimeCount))
+        }))
+    : defaults.saturdayRequirement.combinations;
+
+  const normalizedCreationOrder = Array.isArray(input.creationOrder)
+    ? input.creationOrder
+        .filter((item) => typeof item?.title === "string" && item.title.trim().length > 0)
+        .map((item, index) => ({
+          id: item.id || `step-${index + 1}`,
+          order: Number.isFinite(item.order) ? Math.max(1, Math.floor(item.order)) : index + 1,
+          title: item.title.trim()
+        }))
+    : defaults.creationOrder;
+
+  return {
+    saturdayRequirement: {
+      enabled:
+        typeof input.saturdayRequirement?.enabled === "boolean"
+          ? input.saturdayRequirement.enabled
+          : defaults.saturdayRequirement.enabled,
+      minTotalStaff: Number.isFinite(input.saturdayRequirement?.minTotalStaff)
+        ? Math.max(1, Math.floor(input.saturdayRequirement.minTotalStaff))
+        : defaults.saturdayRequirement.minTotalStaff,
+      combinations: normalizedCombinations.length > 0 ? normalizedCombinations : defaults.saturdayRequirement.combinations
+    },
+    compensatoryHoliday: {
+      enabled:
+        typeof input.compensatoryHoliday?.enabled === "boolean"
+          ? input.compensatoryHoliday.enabled
+          : defaults.compensatoryHoliday.enabled,
+      sameWeekRequired:
+        typeof input.compensatoryHoliday?.sameWeekRequired === "boolean"
+          ? input.compensatoryHoliday.sameWeekRequired
+          : defaults.compensatoryHoliday.sameWeekRequired,
+      description:
+        typeof input.compensatoryHoliday?.description === "string" && input.compensatoryHoliday.description.trim().length > 0
+          ? input.compensatoryHoliday.description.trim()
+          : defaults.compensatoryHoliday.description
+    },
+    creationOrder: normalizedCreationOrder.length > 0 ? normalizedCreationOrder : defaults.creationOrder,
+    autoGenerationPolicy: {
+      useProgrammaticLogic:
+        typeof input.autoGenerationPolicy?.useProgrammaticLogic === "boolean"
+          ? input.autoGenerationPolicy.useProgrammaticLogic
+          : defaults.autoGenerationPolicy.useProgrammaticLogic,
+      useAi: typeof input.autoGenerationPolicy?.useAi === "boolean" ? input.autoGenerationPolicy.useAi : defaults.autoGenerationPolicy.useAi,
+      skipSundayProcessing:
+        typeof input.autoGenerationPolicy?.skipSundayProcessing === "boolean"
+          ? input.autoGenerationPolicy.skipSundayProcessing
+          : defaults.autoGenerationPolicy.skipSundayProcessing,
+      preventFixedFullTimeShift:
+        typeof input.autoGenerationPolicy?.preventFixedFullTimeShift === "boolean"
+          ? input.autoGenerationPolicy.preventFixedFullTimeShift
+          : defaults.autoGenerationPolicy.preventFixedFullTimeShift,
+      description:
+        typeof input.autoGenerationPolicy?.description === "string" && input.autoGenerationPolicy.description.trim().length > 0
+          ? input.autoGenerationPolicy.description.trim()
+          : defaults.autoGenerationPolicy.description
+    }
   };
 }
 
@@ -181,6 +300,41 @@ function defaultShiftPatterns(): ShiftPattern[] {
   ];
 }
 
+export function createDefaultShiftRules(): ShiftRules {
+  return {
+    saturdayRequirement: {
+      enabled: true,
+      minTotalStaff: 3,
+      combinations: [
+        { partTimeCount: 2, fullTimeCount: 1 },
+        { partTimeCount: 1, fullTimeCount: 2 },
+        { partTimeCount: 0, fullTimeCount: 3 }
+      ]
+    },
+    compensatoryHoliday: {
+      enabled: true,
+      sameWeekRequired: true,
+      description: "土曜日に出勤した職員は、原則として同じ週に振替休日を取得する。"
+    },
+    creationOrder: [
+      { id: "step-1", order: 1, title: "休みを入力" },
+      { id: "step-2", order: 2, title: "イベントを入力" },
+      { id: "step-3", order: 3, title: "パートさんでほぼ入れる人を入れる" },
+      { id: "step-4", order: 4, title: "常勤の早番を入れる" },
+      { id: "step-5", order: 5, title: "常勤の遅番を入れる" },
+      { id: "step-6", order: 6, title: "週◯回のパートさんを入れる" },
+      { id: "step-7", order: 7, title: "常勤で調整する" }
+    ],
+    autoGenerationPolicy: {
+      useProgrammaticLogic: true,
+      useAi: true,
+      skipSundayProcessing: true,
+      preventFixedFullTimeShift: true,
+      description: "シフト自動作成は、ルールベースのプログラムとAI補助を組み合わせて実行する。"
+    }
+  };
+}
+
 export function createDefaultMasterData(): MasterData {
   return {
     fullTimeStaff: [],
@@ -196,6 +350,7 @@ export function createDefaultMasterData(): MasterData {
       { age: 5, ratio: 25 }
     ],
     nurseryClasses: [],
+    shiftRules: createDefaultShiftRules(),
     updatedAt: new Date().toISOString()
   };
 }

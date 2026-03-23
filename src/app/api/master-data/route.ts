@@ -23,6 +23,9 @@ function isMasterData(data: MasterData): boolean {
   if (!Array.isArray(data.shiftPatterns) || !Array.isArray(data.childRatios) || !Array.isArray(data.nurseryClasses)) {
     return false;
   }
+  if (!data.shiftRules || typeof data.shiftRules !== "object") {
+    return false;
+  }
 
   const validPatterns = data.shiftPatterns.every((pattern) => {
     return Boolean(pattern.code.trim()) && isTime(pattern.startTime) && isTime(pattern.endTime);
@@ -83,6 +86,56 @@ function isMasterData(data: MasterData): boolean {
 
   const validRatios = data.childRatios.every((ratio) => Number.isInteger(ratio.age) && Number.isFinite(ratio.ratio) && ratio.ratio > 0);
   if (!validRatios) {
+    return false;
+  }
+
+  const validSaturdayRequirement =
+    typeof data.shiftRules.saturdayRequirement?.enabled === "boolean" &&
+    Number.isFinite(data.shiftRules.saturdayRequirement?.minTotalStaff) &&
+    data.shiftRules.saturdayRequirement.minTotalStaff >= 1 &&
+    Array.isArray(data.shiftRules.saturdayRequirement?.combinations) &&
+    data.shiftRules.saturdayRequirement.combinations.every(
+      (item) =>
+        Number.isFinite(item?.partTimeCount) &&
+        item.partTimeCount >= 0 &&
+        Number.isFinite(item?.fullTimeCount) &&
+        item.fullTimeCount >= 0
+    );
+  if (!validSaturdayRequirement) {
+    return false;
+  }
+
+  const validCompensatoryHoliday =
+    typeof data.shiftRules.compensatoryHoliday?.enabled === "boolean" &&
+    typeof data.shiftRules.compensatoryHoliday?.sameWeekRequired === "boolean" &&
+    typeof data.shiftRules.compensatoryHoliday?.description === "string";
+  if (!validCompensatoryHoliday) {
+    return false;
+  }
+
+  const validCreationOrder =
+    Array.isArray(data.shiftRules.creationOrder) &&
+    data.shiftRules.creationOrder.length > 0 &&
+    data.shiftRules.creationOrder.every(
+      (item) =>
+        typeof item?.id === "string" &&
+        item.id.length > 0 &&
+        Number.isFinite(item?.order) &&
+        item.order >= 1 &&
+        typeof item?.title === "string" &&
+        item.title.trim().length > 0
+    );
+  if (!validCreationOrder) {
+    return false;
+  }
+
+  const validAutoGenerationPolicy =
+    typeof data.shiftRules.autoGenerationPolicy?.useProgrammaticLogic === "boolean" &&
+    typeof data.shiftRules.autoGenerationPolicy?.useAi === "boolean" &&
+    typeof data.shiftRules.autoGenerationPolicy?.skipSundayProcessing === "boolean" &&
+    typeof data.shiftRules.autoGenerationPolicy?.preventFixedFullTimeShift === "boolean" &&
+    typeof data.shiftRules.autoGenerationPolicy?.description === "string";
+  if (!validAutoGenerationPolicy) {
     return false;
   }
 
