@@ -56,6 +56,30 @@ type AutoGenerationSnapshot = {
   logs: AutoGenerateLogItem[];
 };
 
+type AiShortageSuggestion = {
+  date: string;
+  time: string;
+  staffName: string;
+  shiftType: string;
+  reason: string;
+};
+
+type AiCompensatorySuggestion = {
+  staffName: string;
+  saturdayDate: string;
+  candidateDate: string;
+  reason: string;
+};
+
+type AiNaturalLanguageOperation = {
+  type: "assignShift" | "clearShift" | "setOff";
+  date: string;
+  staffName: string;
+  shiftType?: string;
+  enabled?: boolean;
+  reason?: string;
+};
+
 function createShiftColumnId(shiftType: string): string {
   return `${shiftType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -285,6 +309,14 @@ export default function HomePage() {
   const [autoGenerateError, setAutoGenerateError] = useState("");
   const [autoGenerateLogs, setAutoGenerateLogs] = useState<AutoGenerateLogItem[]>([]);
   const [autoGenerateLogsExpanded, setAutoGenerateLogsExpanded] = useState(false);
+  const [aiShortageSuggestions, setAiShortageSuggestions] = useState<AiShortageSuggestion[]>([]);
+  const [aiCompensatorySuggestions, setAiCompensatorySuggestions] = useState<AiCompensatorySuggestion[]>([]);
+  const [aiLogSummary, setAiLogSummary] = useState("");
+  const [aiSummaryBullets, setAiSummaryBullets] = useState<string[]>([]);
+  const [aiSupplementGuidance, setAiSupplementGuidance] = useState("");
+  const [aiNaturalLanguageInstruction, setAiNaturalLanguageInstruction] = useState("");
+  const [aiNaturalLanguageResult, setAiNaturalLanguageResult] = useState("");
+  const [aiActionRunning, setAiActionRunning] = useState(false);
   const autoGenerateRunningRef = useRef(false);
   const topScrollRef = useRef<HTMLDivElement | null>(null);
   const bottomScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1589,6 +1621,13 @@ export default function HomePage() {
     setSupplementNote("");
     setAutoGenerateError("");
     setAutoGenerateLogs([]);
+    setAiShortageSuggestions([]);
+    setAiCompensatorySuggestions([]);
+    setAiLogSummary("");
+    setAiSummaryBullets([]);
+    setAiSupplementGuidance("");
+    setAiNaturalLanguageInstruction("");
+    setAiNaturalLanguageResult("");
     setPlannerStep((prev) => (prev <= 2 ? prev : 2));
   }
 
@@ -1702,6 +1741,245 @@ export default function HomePage() {
     return items;
   }
 
+  async function callShiftAi<T>(action: string, payload: unknown): Promise<T | null> {
+    try {
+      const response = await fetch("/api/shift-ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, payload })
+      });
+      const data = (await response.json()) as { error?: string; result?: T };
+      if (!response.ok || !data.result) {
+        if (data.error) {
+          setAutoGenerateError(data.error);
+        }
+        return null;
+      }
+      return data.result;
+    } catch (error) {
+      setAutoGenerateError(error instanceof Error ? error.message : "AI処理に失敗しました。");
+      return null;
+    }
+  }
+
+  function applyAiOperations(operations: AiNaturalLanguageOperation[]): { applied: number; skipped: string[] } {
+    const nextCells = { ...cells };
+    const nextOffByDateAndStaff = { ...offByDateAndStaff };
+    const skipped: string[] = [];
+    let applied = 0;
+    const validDates = new Set(dates);
+
+    const removeStaffFromDate = (date: string, staffName: string): void => {
+      for (const classGroup of SHIFT_CLASS_GROUPS) {
+        for (const column of shiftColumns) {
+          const cellKey = keyOf(date, column.id, classGroup.key);
+          if ((nextCells[cellKey] ?? "").trim() === staffName) {
+            delete nextCells[cellKey];
+          }
+        }
+      }
+    };
+
+    const staffAlreadyAssignedOnDate = (date: string, staffName: string): boolean => {
+      for (const classGroup of SHIFT_CLASS_GROUPS) {
+        for (const column of shiftColumns) {
+          const cellKey = keyOf(date, column.id, classGroup.key);
+          if ((nextCells[cellKey] ?? "").trim() === staffName) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    const assignStaffToShift = (date: string, staffName: string, shiftType: string): boolean => {
+      const targetColumns = shiftColumns.filter((column) => column.shiftType === shiftType);
+      if (targetColumns.length === 0) {
+        return false;
+      }
+      for (const classGroup of SHIFT_CLASS_GROUPS) {
+        for (const column of targetColumns) {
+          const cellKey = keyOf(date, column.id, classGroup.key);
+          const existing = (nextCells[cellKey] ?? "").trim();
+          if (!existing) {
+            nextCells[cellKey] = staffName;
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    operations.forEach((operation) => {
+      const staffName = operation.staffName?.trim();
+      if (!staffName || !validDates.has(operation.date)) {
+        skipped.push(`不正な操作をスキップ: ${operation.type}`);
+        return;
+      }
+      if (!allStaffNames.includes(staffName)) {
+        skipped.push(`${staffName}: 職員名が見つからないためスキップ`);
+        return;
+      }
+
+      if (operation.type === "setOff") {
+        const enabled = operation.enabled !== false;
+        nextOffByDateAndStaff[`${operation.date}|${staffName}`] = enabled;
+        if (enabled) {
+          removeStaffFromDate(operation.date, staffName);
+        }
+        applied += 1;
+        return;
+      }
+
+      if (operation.type === "clearShift") {
+        removeStaffFromDate(operation.date, staffName);
+        applied += 1;
+        return;
+      }
+
+      if (operation.type === "assignShift") {
+        const shiftType = operation.shiftType?.trim();
+        if (!shiftType) {
+          skipped.push(`${staffName}: shiftType が空のためスキップ`);
+          return;
+        }
+        if (nextOffByDateAndStaff[`${operation.date}|${staffName}`]) {
+          skipped.push(`${staffName}: 休み設定のため配置できません`);
+          return;
+        }
+        if (!canWorkOnShift(operation.date, shiftType, staffName)) {
+          skipped.push(`${staffName}: ${operation.date} ${shiftType} は勤務条件外`);
+          return;
+        }
+        if (staffAlreadyAssignedOnDate(operation.date, staffName)) {
+          removeStaffFromDate(operation.date, staffName);
+        }
+        if (!assignStaffToShift(operation.date, staffName, shiftType)) {
+          skipped.push(`${operation.date} ${shiftType}: 空き枠がなく配置できません`);
+          return;
+        }
+        applied += 1;
+      }
+    });
+
+    if (applied > 0) {
+      setCells(nextCells);
+      setOffByDateAndStaff(nextOffByDateAndStaff);
+    }
+    return { applied, skipped };
+  }
+
+  async function handleAiNaturalLanguageEdit(): Promise<void> {
+    const instruction = aiNaturalLanguageInstruction.trim();
+    if (!instruction || !masterData) {
+      return;
+    }
+    setAiActionRunning(true);
+    setAiNaturalLanguageResult("");
+    try {
+      const assignments = Object.entries(cells)
+        .map(([cellKey, staffName]) => ({ cellKey, staffName: staffName.trim() }))
+        .filter((item) => item.staffName.length > 0)
+        .map((item) => {
+          const [date, classGroup, columnId] = item.cellKey.split("|");
+          const column = shiftColumns.find((entry) => entry.id === columnId);
+          return {
+            date,
+            classGroup,
+            shiftType: column?.shiftType ?? "",
+            staffName: item.staffName
+          };
+        })
+        .filter((item) => item.date && item.shiftType);
+      const offRecords = Object.entries(offByDateAndStaff)
+        .filter(([, enabled]) => enabled)
+        .map(([key]) => {
+          const [date, staffName] = key.split("|");
+          return { date, staffName };
+        });
+      const staffProfiles = [
+        ...masterData.fullTimeStaff.map((item) => ({
+          name: item.name,
+          kind: "full-time",
+          possibleShiftPatternCodes: item.possibleShiftPatternCodes
+        })),
+        ...masterData.partTimeStaff.map((item) => ({
+          name: item.name,
+          kind: "part-time",
+          possibleShiftPatternCodes: item.possibleShiftPatternCodes,
+          availableWeekdays: item.availableWeekdays,
+          availableStartTime: item.availableStartTime,
+          availableEndTime: item.availableEndTime
+        }))
+      ];
+
+      const result = await callShiftAi<{ operations?: AiNaturalLanguageOperation[]; summary?: string }>("naturalLanguageEdit", {
+        month,
+        instruction,
+        availableShiftTypes: allShiftTypes,
+        assignments,
+        offRecords,
+        staffProfiles
+      });
+      const operations = result?.operations ?? [];
+      if (operations.length === 0) {
+        setAiNaturalLanguageResult("変更提案が見つかりませんでした。");
+        return;
+      }
+      const applyResult = applyAiOperations(operations);
+      const skipText = applyResult.skipped.length > 0 ? ` / スキップ: ${applyResult.skipped.slice(0, 3).join("、")}` : "";
+      setAiNaturalLanguageResult(
+        `${result?.summary ?? "AI提案を適用しました。"}（適用 ${applyResult.applied} 件${skipText}）`
+      );
+      if (applyResult.applied > 0) {
+        showToast(`AI提案を ${applyResult.applied} 件反映しました`);
+      }
+    } finally {
+      setAiActionRunning(false);
+    }
+  }
+
+  function applyAiShortageSuggestion(item: AiShortageSuggestion): void {
+    const result = applyAiOperations([
+      {
+        type: "assignShift",
+        date: item.date,
+        staffName: item.staffName,
+        shiftType: item.shiftType,
+        reason: item.reason
+      }
+    ]);
+    if (result.applied > 0) {
+      showToast(`提案を反映: ${item.date} ${item.staffName} ${item.shiftType}`);
+    } else {
+      alert(result.skipped[0] ?? "提案を反映できませんでした。");
+    }
+  }
+
+  async function handleInterpretSupplementNote(): Promise<void> {
+    const note = supplementNote.trim();
+    if (!note) {
+      return;
+    }
+    setAiActionRunning(true);
+    try {
+      const result = await callShiftAi<{ guidance?: string; priorityRules?: string[] }>("interpretSupplementNote", {
+        month,
+        supplementNote: note
+      });
+      const guidance = result?.guidance?.trim() ?? "";
+      const rules = (result?.priorityRules ?? []).filter((item) => item.trim().length > 0);
+      if (guidance) {
+        setAiSupplementGuidance(guidance);
+      }
+      if (rules.length > 0) {
+        setAiSummaryBullets(rules.slice(0, 5));
+      }
+    } finally {
+      setAiActionRunning(false);
+    }
+  }
+
   async function handleAutoGenerateDraft(): Promise<void> {
     if (autoGenerateRunningRef.current) {
       return;
@@ -1716,6 +1994,11 @@ export default function HomePage() {
     }
     setAutoGenerateError("");
     setAutoGenerateLogsExpanded(false);
+    setAiShortageSuggestions([]);
+    setAiCompensatorySuggestions([]);
+    setAiLogSummary("");
+    setAiSummaryBullets([]);
+    setAiSupplementGuidance("");
     autoGenerateRunningRef.current = true;
     setAutoGenerating(true);
     // Ensure loading state is painted before heavy synchronous work starts.
@@ -1749,8 +2032,22 @@ export default function HomePage() {
       const rules: ShiftRules = masterData.shiftRules ?? createDefaultShiftRules();
       const skipSundayProcessing = rules.autoGenerationPolicy.skipSundayProcessing;
       const preventFixedFullTimeShift = rules.autoGenerationPolicy.preventFixedFullTimeShift;
+      const useAiAssistance = rules.autoGenerationPolicy.useAi;
       const orderedRuleSteps = [...rules.creationOrder].sort((a, b) => a.order - b.order).map((item) => item.title);
       const titleAt = (index: number, fallback: string): string => orderedRuleSteps[index] ?? fallback;
+      let supplementGuidance = "";
+      if (useAiAssistance && supplementNote.trim().length > 0) {
+        const guidanceResult = await callShiftAi<{ guidance?: string; priorityRules?: string[] }>("interpretSupplementNote", {
+          month,
+          supplementNote: supplementNote.trim(),
+          creationOrder: orderedRuleSteps
+        });
+        supplementGuidance = guidanceResult?.guidance?.trim() ?? "";
+        if (supplementGuidance) {
+          setAiSupplementGuidance(supplementGuidance);
+          appendLog("info", "rules", `AI補足解釈: ${supplementGuidance}`);
+        }
+      }
 
       let nextCells: Record<string, string> = {};
       const nextOffByDateAndStaff = { ...offByDateAndStaff };
@@ -1838,6 +2135,7 @@ export default function HomePage() {
       let substituteHolidayCount = 0;
       let unassignedSlotCount = 0;
       let saturdayViolationCount = 0;
+      const unresolvedCompensatoryRequests: Array<{ saturdayDate: string; staffNames: string[] }> = [];
 
       appendLog("info", "start", `自動作成を開始: 対象月 ${month}`);
       appendLog(
@@ -1882,6 +2180,9 @@ export default function HomePage() {
       const orderedCandidatesByDate = (candidates: string[]): string[] => {
         return [...candidates];
       };
+      const aiRerankCache = new Map<string, string[]>();
+      let aiRerankCalls = 0;
+      const maxAiRerankCalls = 24;
       const shiftTypeCoversTime = (shiftType: string, time: string): boolean => {
         const pattern = shiftPatternByCode.get(shiftType);
         if (!pattern) {
@@ -2029,14 +2330,14 @@ export default function HomePage() {
       appendLog("info", "step-2", `${titleAt(1, "イベントを入力")}: イベント入力 ${eventInputCount} 日を反映`);
       pushSnapshot("step-1-2", "Step1-2 休み/イベント反映", "手入力情報を固定した状態");
 
-      const runAssignmentPhase = (
+      const runAssignmentPhase = async (
         stepLabel: string,
         ruleTitle: string,
         staffCandidates: string[],
         preferredShiftResolver: (name: string) => string,
         maxAssignmentsPerDateResolver: (date: string) => number,
         options?: { avoidConsecutiveEarly?: boolean }
-      ): void => {
+      ): Promise<void> => {
         appendLog("info", stepLabel, `${ruleTitle}: 割当フェーズを開始（候補 ${staffCandidates.length} 名）`);
         for (const date of dates) {
           if (skipSundayProcessing && isSundayDate(date)) {
@@ -2086,6 +2387,50 @@ export default function HomePage() {
               }
               return 0;
             });
+            let aiRankedCandidates = [...sortedByWorkload];
+            if (
+              useAiAssistance &&
+              highestPriorityShortageTime &&
+              sortedByWorkload.length > 1 &&
+              aiRerankCalls < maxAiRerankCalls
+            ) {
+              const rankingTarget = sortedByWorkload.slice(0, 6);
+              const cacheKey = `${date}|${highestPriorityShortageTime}|${stepLabel}|${rankingTarget.join(",")}`;
+              const cached = aiRerankCache.get(cacheKey);
+              if (cached && cached.length > 0) {
+                const front = cached.filter((name) => sortedByWorkload.includes(name));
+                const tail = sortedByWorkload.filter((name) => !front.includes(name));
+                aiRankedCandidates = [...front, ...tail];
+              } else {
+                aiRerankCalls += 1;
+                const result = await callShiftAi<{ rankedStaffNames?: string[]; reason?: string }>("rerankCandidates", {
+                  month,
+                  date,
+                  shortageTime: highestPriorityShortageTime,
+                  stepLabel,
+                  ruleTitle,
+                  supplementNote: supplementNote.trim(),
+                  supplementGuidance,
+                  candidates: rankingTarget.map((name) => ({
+                    staffName: name,
+                    isFullTime: fullTimeSet.has(name),
+                    monthlyAssignments: assignmentCountByStaff.get(name) ?? 0,
+                    saturdayAssignments: saturdayAssignmentCountByStaff.get(name) ?? 0,
+                    weeklyDaysTarget: partByName.get(name)?.weeklyDays ?? null,
+                    preferredShift: preferredShiftResolver(name)
+                  }))
+                });
+                const ranked = (result?.rankedStaffNames ?? []).filter((name) => sortedByWorkload.includes(name));
+                if (ranked.length > 0) {
+                  aiRerankCache.set(cacheKey, ranked);
+                  const tail = sortedByWorkload.filter((name) => !ranked.includes(name));
+                  aiRankedCandidates = [...ranked, ...tail];
+                  if (result?.reason) {
+                    appendLog("info", stepLabel, `${date}: AI再ランキング採用（${result.reason}）`);
+                  }
+                }
+              }
+            }
             const selectSlotFromCandidates = (
               candidates: string[]
             ): { selectedName: string; targetSlot: { classGroup: ShiftClassGroup; column: ShiftColumn } } | null => {
@@ -2103,7 +2448,7 @@ export default function HomePage() {
               return null;
             };
 
-            let selected = selectSlotFromCandidates(sortedByWorkload);
+            let selected = selectSlotFromCandidates(aiRankedCandidates);
             if (!selected && options?.avoidConsecutiveEarly) {
               // Fall back: keep filling shortages even if early shifts become consecutive.
               selected = selectSlotFromCandidates(staffOrder);
@@ -2165,7 +2510,7 @@ export default function HomePage() {
         .sort((a, b) => b.weeklyDays - a.weeklyDays)
         .map((staff) => staff.normalizedName);
 
-      runAssignmentPhase(
+      await runAssignmentPhase(
         "step-3",
         titleAt(2, "パートさんでほぼ入れる人を入れる"),
         partPriorityNames,
@@ -2173,7 +2518,7 @@ export default function HomePage() {
         (date) => Math.min(partPriorityNames.length, Math.max(2, Math.ceil((targetByDate.get(date) ?? 0) * 0.3)))
       );
       pushSnapshot("step-3", "Step3 パート優先配置", titleAt(2, "パートさんでほぼ入れる人を入れる"));
-      runAssignmentPhase(
+      await runAssignmentPhase(
         "step-4",
         titleAt(3, "常勤の早番を入れる"),
         fullTimeNames,
@@ -2182,7 +2527,7 @@ export default function HomePage() {
         { avoidConsecutiveEarly: true }
       );
       pushSnapshot("step-4", "Step4 常勤早番配置", titleAt(3, "常勤の早番を入れる"));
-      runAssignmentPhase(
+      await runAssignmentPhase(
         "step-5",
         titleAt(4, "常勤の遅番を入れる"),
         fullTimeNames,
@@ -2190,7 +2535,7 @@ export default function HomePage() {
         (date) => Math.max(2, Math.ceil((targetByDate.get(date) ?? 0) * 0.35))
       );
       pushSnapshot("step-5", "Step5 常勤遅番配置", titleAt(4, "常勤の遅番を入れる"));
-      runAssignmentPhase(
+      await runAssignmentPhase(
         "step-6",
         titleAt(5, "週◯回のパートさんを入れる"),
         partWeeklyNames,
@@ -2198,7 +2543,7 @@ export default function HomePage() {
         (date) => Math.max(1, Math.ceil((targetByDate.get(date) ?? 0) * 0.2))
       );
       pushSnapshot("step-6", "Step6 週回数パート配置", titleAt(5, "週◯回のパートさんを入れる"));
-      runAssignmentPhase(
+      await runAssignmentPhase(
         "step-7",
         titleAt(6, "常勤で調整する"),
         fullTimeNames,
@@ -2334,6 +2679,7 @@ export default function HomePage() {
             }
           }
           if (unresolvedStaffNames.length > 0) {
+            unresolvedCompensatoryRequests.push({ saturdayDate: date, staffNames: [...unresolvedStaffNames] });
             const preview = unresolvedStaffNames.slice(0, 4).join("、");
             appendLog(
               "warn",
@@ -2355,7 +2701,7 @@ export default function HomePage() {
       }
       pushSnapshot("compensatory", "振替休日反映", "同週振替ルールの反映後");
 
-      runAssignmentPhase(
+      await runAssignmentPhase(
         "step-7b",
         `${titleAt(6, "常勤で調整する")}（振替後再調整）`,
         [...partWeeklyNames, ...fullTimeNames],
@@ -2485,6 +2831,58 @@ export default function HomePage() {
       pushSnapshot("analysis", "分析結果", "日次集計まで反映");
 
       const timeBasedShortages = shortageItemsForCells(nextCells);
+      if (useAiAssistance) {
+        const shortageCandidatePayload = timeBasedShortages.slice(0, 6).map((item) => {
+          const assignedNames = assignedByDate.get(item.date) ?? new Set<string>();
+          const candidates = staffPool
+            .filter((name) => !assignedNames.has(name))
+            .filter((name) => !nextOffByDateAndStaff[`${item.date}|${name}`])
+            .filter((name) => shiftColumns.some((column) => canWorkOnShift(item.date, column.shiftType, name)))
+            .slice(0, 8)
+            .map((name) => ({
+              staffName: name,
+              isFullTime: fullTimeSet.has(name),
+              monthlyAssignments: assignmentCountByStaff.get(name) ?? 0,
+              saturdayAssignments: saturdayAssignmentCountByStaff.get(name) ?? 0,
+              weeklyDaysTarget: partByName.get(name)?.weeklyDays ?? null,
+              candidateShiftTypes: shiftColumns
+                .filter((column) => shiftTypeCoversTime(column.shiftType, item.time) && canWorkOnShift(item.date, column.shiftType, name))
+                .map((column) => column.shiftType)
+            }));
+          return { ...item, candidates };
+        });
+        const shortageSuggestionResult = await callShiftAi<{ suggestions?: AiShortageSuggestion[] }>("suggestShortageFixes", {
+          month,
+          supplementNote: supplementNote.trim(),
+          supplementGuidance,
+          shortages: shortageCandidatePayload
+        });
+        setAiShortageSuggestions((shortageSuggestionResult?.suggestions ?? []).slice(0, 5));
+
+        const compensatorySuggestionResult = await callShiftAi<{ suggestions?: AiCompensatorySuggestion[] }>(
+          "suggestCompensatoryHolidays",
+          {
+            month,
+            supplementNote: supplementNote.trim(),
+            unresolvedCompensatoryRequests,
+            assignmentCountByStaff: Array.from(assignmentCountByStaff.entries()).map(([name, count]) => ({ name, count })),
+            saturdayAssignmentCountByStaff: Array.from(saturdayAssignmentCountByStaff.entries()).map(([name, count]) => ({ name, count }))
+          }
+        );
+        setAiCompensatorySuggestions((compensatorySuggestionResult?.suggestions ?? []).slice(0, 8));
+
+        const summarizeResult = await callShiftAi<{ summary?: string; bullets?: string[] }>("summarizeLogs", {
+          month,
+          supplementNote: supplementNote.trim(),
+          logs: executionLogs.slice(-120).map((item) => ({
+            level: item.level,
+            step: item.step,
+            message: item.message
+          }))
+        });
+        setAiLogSummary(summarizeResult?.summary?.trim() ?? "");
+        setAiSummaryBullets((summarizeResult?.bullets ?? []).filter((item) => item.trim().length > 0).slice(0, 5));
+      }
       if (timeBasedShortages.length > 0) {
         const preview = timeBasedShortages.slice(0, 20);
         for (const item of preview) {
@@ -2635,6 +3033,82 @@ export default function HomePage() {
             </div>
           </section>
         ) : null}
+        {aiLogSummary || aiShortageSuggestions.length > 0 || aiCompensatorySuggestions.length > 0 || aiSupplementGuidance ? (
+          <section className="rounded-xl bg-white p-4 shadow-sm">
+            <h2 className="text-base font-semibold text-orange-900">AI提案・要約</h2>
+            {aiSupplementGuidance ? (
+              <p className="mt-2 rounded bg-orange-50 px-3 py-2 text-sm text-orange-800">補足事項の解釈: {aiSupplementGuidance}</p>
+            ) : null}
+            {aiLogSummary ? (
+              <div className="mt-2 rounded bg-orange-50 px-3 py-2 text-sm text-orange-800">
+                <p className="font-semibold text-orange-900">先生向けサマリー</p>
+                <p className="mt-1">{aiLogSummary}</p>
+                {aiSummaryBullets.length > 0 ? (
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    {aiSummaryBullets.map((item, index) => (
+                      <li key={`ai-summary-${index}`}>{item}</li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+            {aiShortageSuggestions.length > 0 ? (
+              <div className="mt-3">
+                <p className="text-sm font-semibold text-orange-900">未充足への提案（クリック適用）</p>
+                <div className="mt-2 space-y-2">
+                  {aiShortageSuggestions.map((item, index) => (
+                    <div key={`shortage-suggestion-${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded bg-orange-50 px-3 py-2 text-sm">
+                      <p className="text-orange-900">
+                        {`${item.date} ${item.time} / ${item.staffName} を ${item.shiftType} に配置 - ${item.reason}`}
+                      </p>
+                      <button
+                        className="rounded bg-orange-500 px-3 py-1 text-xs font-semibold text-white hover:bg-orange-600"
+                        onClick={() => applyAiShortageSuggestion(item)}
+                      >
+                        反映
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {aiCompensatorySuggestions.length > 0 ? (
+              <div className="mt-3">
+                <p className="text-sm font-semibold text-orange-900">振替休日候補（提案のみ）</p>
+                <div className="mt-2 space-y-2">
+                  {aiCompensatorySuggestions.map((item, index) => (
+                    <p key={`comp-suggestion-${index}`} className="rounded bg-orange-50 px-3 py-2 text-sm text-orange-900">
+                      {`${item.staffName}: ${item.saturdayDate} の振替候補 ${item.candidateDate}（${item.reason}）`}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        <section className="rounded-xl bg-white p-4 shadow-sm">
+          <h2 className="text-base font-semibold text-orange-900">自然言語でシフト修正（AI）</h2>
+          <p className="mt-1 text-sm text-orange-700">例: 「4/18のA先生を休みにして、代わりにB先生を遅番へ」</p>
+          <textarea
+            className="mt-2 h-20 w-full rounded bg-orange-50 px-3 py-2 text-sm text-orange-900"
+            value={aiNaturalLanguageInstruction}
+            onChange={(event) => setAiNaturalLanguageInstruction(event.target.value)}
+            placeholder="変更依頼を自然な文章で入力"
+          />
+          <div className="mt-2 flex justify-end">
+            <button
+              className="rounded bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-60"
+              onClick={() => void handleAiNaturalLanguageEdit()}
+              disabled={aiActionRunning || aiNaturalLanguageInstruction.trim().length === 0}
+            >
+              {aiActionRunning ? "AI処理中..." : "AIで修正案を適用"}
+            </button>
+          </div>
+          {aiNaturalLanguageResult ? (
+            <p className="mt-2 rounded bg-orange-50 px-3 py-2 text-sm text-orange-800">{aiNaturalLanguageResult}</p>
+          ) : null}
+        </section>
 
         <section className="rounded-xl bg-white p-4 shadow-sm">
           <div className="mt-3 flex items-center justify-between gap-2">
@@ -3504,6 +3978,18 @@ export default function HomePage() {
                       onChange={(event) => setSupplementNote(event.target.value)}
                       placeholder="例: 4/15は行事準備のため、午後はきりん組を厚めに配置したい"
                     />
+                    <div className="flex justify-end">
+                      <button
+                        className="rounded bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-200 disabled:opacity-60"
+                        onClick={() => void handleInterpretSupplementNote()}
+                        disabled={aiActionRunning || supplementNote.trim().length === 0}
+                      >
+                        {aiActionRunning ? "解析中..." : "AIで補足事項を解釈"}
+                      </button>
+                    </div>
+                    {aiSupplementGuidance ? (
+                      <p className="rounded bg-white px-3 py-2 text-sm text-orange-800">AI解釈: {aiSupplementGuidance}</p>
+                    ) : null}
                   </div>
                 ) : null}
 
