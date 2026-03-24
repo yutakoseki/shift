@@ -22,6 +22,12 @@ variable "vercel_project_name" {
   default     = "hoikuen-shift"
 }
 
+variable "bedrock_model_id" {
+  description = "Amazon Bedrock model ID or inference profile ID/ARN"
+  type        = string
+  default     = "jp.anthropic.claude-sonnet-4-6"
+}
+
 variable "cognito_callback_urls" {
   description = "Cognito app client callback URLs"
   type        = list(string)

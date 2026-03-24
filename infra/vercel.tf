@@ -60,3 +60,10 @@ resource "vercel_project_environment_variable" "aws_secret_access_key" {
   target     = ["production", "preview"]
   sensitive  = true
 }
+
+resource "vercel_project_environment_variable" "bedrock_model_id" {
+  project_id = vercel_project.app.id
+  key        = "BEDROCK_MODEL_ID"
+  value      = var.bedrock_model_id
+  target     = ["production", "preview", "development"]
+}

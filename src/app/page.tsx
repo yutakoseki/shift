@@ -2177,6 +2177,114 @@ export default function HomePage() {
         return a.id.localeCompare(b.id, "ja");
       });
       const baseDateIndexByDate = new Map(dates.map((date, index) => [date, index]));
+      const weekKeyByDate = new Map<string, string>();
+      const weekDatesByKey = new Map<string, string[]>();
+      for (const date of dates) {
+        const target = new Date(`${date}T00:00:00`);
+        if (Number.isNaN(target.getTime())) {
+          continue;
+        }
+        const day = target.getDay();
+        const mondayDiff = day === 0 ? -6 : 1 - day;
+        const monday = new Date(target);
+        monday.setDate(target.getDate() + mondayDiff);
+        const weekKey = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, "0")}-${String(monday.getDate()).padStart(2, "0")}`;
+        weekKeyByDate.set(date, weekKey);
+        const currentDates = weekDatesByKey.get(weekKey) ?? [];
+        currentDates.push(date);
+        weekDatesByKey.set(weekKey, currentDates);
+      }
+      for (const [weekKey, weekDates] of weekDatesByKey.entries()) {
+        weekDatesByKey.set(weekKey, [...weekDates].sort((a, b) => a.localeCompare(b)));
+      }
+      const fullTimeWeeklyAssignedByName = new Map<string, Map<string, number>>(
+        fullTimeNames.map((name) => [name, new Map<string, number>()])
+      );
+      const fullTimeWeeklyTargetByName = new Map<string, Map<string, number>>(
+        fullTimeNames.map((name) => [
+          name,
+          new Map(
+            Array.from(weekDatesByKey.entries()).map(([weekKey, weekDates]) => {
+              const availableDays = weekDates.filter((candidateDate) => {
+                if (skipSundayProcessing && isSundayDate(candidateDate)) {
+                  return false;
+                }
+                if (nextOffByDateAndStaff[`${candidateDate}|${name}`]) {
+                  return false;
+                }
+                return shiftColumns.some((column) => canWorkOnShift(candidateDate, column.shiftType, name));
+              }).length;
+              return [weekKey, Math.min(5, availableDays)];
+            })
+          )
+        ])
+      );
+      const fullTimeWeekKeyForDate = (date: string): string => weekKeyByDate.get(date) ?? "";
+      const getFullTimeWeeklyAssignedCount = (staffName: string, date: string): number => {
+        const weekKey = fullTimeWeekKeyForDate(date);
+        if (!weekKey) {
+          return 0;
+        }
+        return fullTimeWeeklyAssignedByName.get(staffName)?.get(weekKey) ?? 0;
+      };
+      const getFullTimeWeeklyTargetCount = (staffName: string, date: string): number => {
+        const weekKey = fullTimeWeekKeyForDate(date);
+        if (!weekKey) {
+          return 0;
+        }
+        return fullTimeWeeklyTargetByName.get(staffName)?.get(weekKey) ?? 0;
+      };
+      const fullTimeWeeklyDeficit = (staffName: string, date: string): number => {
+        if (!fullTimeSet.has(staffName)) {
+          return 0;
+        }
+        const target = getFullTimeWeeklyTargetCount(staffName, date);
+        const assigned = getFullTimeWeeklyAssignedCount(staffName, date);
+        return Math.max(0, target - assigned);
+      };
+      const hasRemainingFullTimeWeeklyQuota = (staffName: string, date: string): boolean => {
+        if (!fullTimeSet.has(staffName)) {
+          return true;
+        }
+        const target = getFullTimeWeeklyTargetCount(staffName, date);
+        if (target <= 0) {
+          return false;
+        }
+        return getFullTimeWeeklyAssignedCount(staffName, date) < target;
+      };
+      const incrementFullTimeWeeklyAssignment = (staffName: string, date: string): void => {
+        if (!fullTimeSet.has(staffName)) {
+          return;
+        }
+        const weekKey = fullTimeWeekKeyForDate(date);
+        if (!weekKey) {
+          return;
+        }
+        const staffWeeklyMap = fullTimeWeeklyAssignedByName.get(staffName);
+        if (!staffWeeklyMap) {
+          return;
+        }
+        staffWeeklyMap.set(weekKey, (staffWeeklyMap.get(weekKey) ?? 0) + 1);
+      };
+      const decrementFullTimeWeeklyAssignment = (staffName: string, date: string): void => {
+        if (!fullTimeSet.has(staffName)) {
+          return;
+        }
+        const weekKey = fullTimeWeekKeyForDate(date);
+        if (!weekKey) {
+          return;
+        }
+        const staffWeeklyMap = fullTimeWeeklyAssignedByName.get(staffName);
+        if (!staffWeeklyMap) {
+          return;
+        }
+        const current = staffWeeklyMap.get(weekKey) ?? 0;
+        if (current <= 1) {
+          staffWeeklyMap.delete(weekKey);
+          return;
+        }
+        staffWeeklyMap.set(weekKey, current - 1);
+      };
       const orderedCandidatesByDate = (candidates: string[]): string[] => {
         return [...candidates];
       };
@@ -2365,14 +2473,21 @@ export default function HomePage() {
               .filter((name) => !assignedNames.has(name))
               .filter((name) => !nextOffByDateAndStaff[`${date}|${name}`])
               .filter((name) => shiftColumns.some((column) => canWorkOnShift(date, column.shiftType, name)));
+            const quotaCandidates = availableCandidates.filter((name) => hasRemainingFullTimeWeeklyQuota(name, date));
+            const candidatePool = quotaCandidates.length > 0 ? quotaCandidates : availableCandidates;
 
-            if (availableCandidates.length === 0) {
+            if (candidatePool.length === 0) {
               break;
             }
 
-            const staffOrder = orderedCandidatesByDate(staffCandidates).filter((name) => availableCandidates.includes(name));
+            const staffOrder = orderedCandidatesByDate(staffCandidates).filter((name) => candidatePool.includes(name));
             const prioritizeSaturdayFairness = isSaturdayDate(date);
             const sortedByWorkload = [...staffOrder].sort((a, b) => {
+              const aDeficit = fullTimeWeeklyDeficit(a, date);
+              const bDeficit = fullTimeWeeklyDeficit(b, date);
+              if (aDeficit !== bDeficit) {
+                return bDeficit - aDeficit;
+              }
               if (prioritizeSaturdayFairness) {
                 const aSaturdayCount = saturdayAssignmentCountByStaff.get(a) ?? 0;
                 const bSaturdayCount = saturdayAssignmentCountByStaff.get(b) ?? 0;
@@ -2463,6 +2578,7 @@ export default function HomePage() {
             assignedNames.add(selectedName);
             assignedByDate.set(date, assignedNames);
             incrementFullTimeShiftUsage(selectedName, targetSlot.column.shiftType);
+            incrementFullTimeWeeklyAssignment(selectedName, date);
             remainingByDate.set(date, Math.max(0, (remainingByDate.get(date) ?? 0) - 1));
             phaseAssigned += 1;
             createdCount += 1;
@@ -2603,6 +2719,7 @@ export default function HomePage() {
                   assignedByDate.set(candidateDate, assignedNames);
                   remainingByDate.set(candidateDate, (remainingByDate.get(candidateDate) ?? 0) + 1);
                   assignmentCountByStaff.set(staffName, Math.max(0, (assignmentCountByStaff.get(staffName) ?? 0) - 1));
+                  decrementFullTimeWeeklyAssignment(staffName, candidateDate);
                   for (const removedShiftType of removedResult.removedShiftTypes) {
                     decrementFullTimeShiftUsage(staffName, removedShiftType);
                   }
@@ -2629,6 +2746,11 @@ export default function HomePage() {
                 .filter((name) => !nextOffByDateAndStaff[`${candidateDate}|${name}`])
                 .filter((name) => canWorkOnShift(candidateDate, targetShiftType, name))
                 .sort((a, b) => {
+                  const aDeficit = fullTimeWeeklyDeficit(a, candidateDate);
+                  const bDeficit = fullTimeWeeklyDeficit(b, candidateDate);
+                  if (aDeficit !== bDeficit) {
+                    return bDeficit - aDeficit;
+                  }
                   const aCount = assignmentCountByStaff.get(a) ?? 0;
                   const bCount = assignmentCountByStaff.get(b) ?? 0;
                   if (aCount !== bCount) {
@@ -2659,6 +2781,8 @@ export default function HomePage() {
               assignedByDate.set(candidateDate, assignedNames);
               assignmentCountByStaff.set(staffName, Math.max(0, (assignmentCountByStaff.get(staffName) ?? 0) - 1));
               assignmentCountByStaff.set(replacementName, (assignmentCountByStaff.get(replacementName) ?? 0) + 1);
+              decrementFullTimeWeeklyAssignment(staffName, candidateDate);
+              incrementFullTimeWeeklyAssignment(replacementName, candidateDate);
               for (const shiftType of replacedResult.replacedShiftTypes) {
                 decrementFullTimeShiftUsage(staffName, shiftType);
                 incrementFullTimeShiftUsage(replacementName, shiftType);
@@ -2740,11 +2864,18 @@ export default function HomePage() {
                 (column) => canWorkOnShift(date, column.shiftType, name) && shiftTypeCoversTime(column.shiftType, highestPriorityShortageTime)
               );
             });
-          if (availableCandidates.length === 0) {
+          const quotaCandidates = availableCandidates.filter((name) => hasRemainingFullTimeWeeklyQuota(name, date));
+          const candidatePool = quotaCandidates.length > 0 ? quotaCandidates : availableCandidates;
+          if (candidatePool.length === 0) {
             break;
           }
 
-          const sortedCandidates = [...availableCandidates].sort((a, b) => {
+          const sortedCandidates = [...candidatePool].sort((a, b) => {
+            const aDeficit = fullTimeWeeklyDeficit(a, date);
+            const bDeficit = fullTimeWeeklyDeficit(b, date);
+            if (aDeficit !== bDeficit) {
+              return bDeficit - aDeficit;
+            }
             if (isSaturdayDate(date)) {
               const aSaturdayCount = saturdayAssignmentCountByStaff.get(a) ?? 0;
               const bSaturdayCount = saturdayAssignmentCountByStaff.get(b) ?? 0;
@@ -2777,6 +2908,7 @@ export default function HomePage() {
           assignedNames.add(selectedName);
           assignedByDate.set(date, assignedNames);
           incrementFullTimeShiftUsage(selectedName, targetSlot.column.shiftType);
+          incrementFullTimeWeeklyAssignment(selectedName, date);
           overflowRemainingByDate.set(date, Math.max(0, (overflowRemainingByDate.get(date) ?? 0) - 1));
           createdCount += 1;
           const nextCount = (assignmentCountByStaff.get(selectedName) ?? 0) + 1;

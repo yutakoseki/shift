@@ -56,6 +56,16 @@ resource "aws_iam_user_policy" "vercel_runtime_ddb" {
           "cognito-idp:AdminGetUser"
         ]
         Resource = aws_cognito_user_pool.director_pool.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock:Converse",
+          "bedrock:ConverseStream",
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = "*"
       }
     ]
   })
