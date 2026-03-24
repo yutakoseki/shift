@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureUserProfile } from "@/lib/dynamodb";
+import { AwsCredentialError, ensureUserProfile } from "@/lib/dynamodb";
 import { logError, logInfo } from "@/lib/server-log";
 
 type Body = {
@@ -25,6 +25,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ profile });
   } catch (error) {
     logError("api/profile/sync.POST", "profile sync failed", error, { requestId, userId, email });
+    if (error instanceof AwsCredentialError) {
+      return NextResponse.json({ error: "aws credentials are invalid or expired" }, { status: 503 });
+    }
     return NextResponse.json({ error: "profile sync failed" }, { status: 500 });
   }
 }

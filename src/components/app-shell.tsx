@@ -70,6 +70,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [authErrorMessage, setAuthErrorMessage] = useState("");
   const [collapsed, setCollapsed] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
 
@@ -128,6 +129,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             email
           })
         });
+        if (syncResponse.status === 503) {
+          if (!mounted) {
+            return;
+          }
+          setAuthErrorMessage("AWS認証情報が無効または期限切れです。管理者に連絡してサーバー設定を更新してください。");
+          setLoadingAuth(false);
+          return;
+        }
+
         const syncData = (await syncResponse.json()) as { profile?: { role: UserRole } };
         if (!syncResponse.ok || !syncData.profile) {
           throw new Error("プロフィール同期に失敗しました");
@@ -136,6 +146,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         if (!mounted) {
           return;
         }
+        setAuthErrorMessage("");
         setCurrentUser({
           userId: user.userId,
           email,
@@ -166,6 +177,31 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   if (loadingAuth) {
     return <FullscreenLoading message="認証確認中..." />;
+  }
+
+  if (authErrorMessage) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-white px-4 py-8">
+        <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-lg shadow-orange-100">
+          <p className="text-sm font-semibold text-orange-700">認証は完了しましたが、初期化処理に失敗しました。</p>
+          <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{authErrorMessage}</p>
+          <div className="mt-4 flex items-center gap-2">
+            <button
+              className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600"
+              onClick={() => router.refresh()}
+            >
+              再読み込み
+            </button>
+            <button
+              className="rounded-lg bg-orange-100 px-4 py-2 text-sm font-semibold text-orange-700 hover:bg-orange-200"
+              onClick={() => void handleSignOut()}
+            >
+              ログアウト
+            </button>
+          </div>
+        </div>
+      </main>
+    );
   }
 
   return (
