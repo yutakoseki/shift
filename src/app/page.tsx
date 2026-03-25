@@ -1762,6 +1762,85 @@ export default function HomePage() {
     }
   }
 
+  function sanitizeAiShortageSuggestions(input: AiShortageSuggestion[]): AiShortageSuggestion[] {
+    const staffSet = new Set(allStaffNames);
+    const dateSet = new Set(dates);
+    const shiftTypeSet = new Set(allShiftTypes);
+    const seen = new Set<string>();
+    const result: AiShortageSuggestion[] = [];
+    for (const item of input) {
+      const date = item.date?.trim();
+      const time = item.time?.trim();
+      const staffName = item.staffName?.trim();
+      const shiftType = item.shiftType?.trim();
+      const reason = item.reason?.trim() || "AI提案";
+      if (!dateSet.has(date) || !staffSet.has(staffName) || !shiftTypeSet.has(shiftType)) {
+        continue;
+      }
+      if (!/^\d{2}:\d{2}$/.test(time)) {
+        continue;
+      }
+      if (!canWorkOnShift(date, shiftType, staffName)) {
+        continue;
+      }
+      const key = `${date}|${time}|${staffName}|${shiftType}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      result.push({ date, time, staffName, shiftType, reason });
+    }
+    return result;
+  }
+
+  function sanitizeAiCompensatorySuggestions(input: AiCompensatorySuggestion[]): AiCompensatorySuggestion[] {
+    const staffSet = new Set(allStaffNames);
+    const dateSet = new Set(dates);
+    const seen = new Set<string>();
+    const result: AiCompensatorySuggestion[] = [];
+    for (const item of input) {
+      const staffName = item.staffName?.trim();
+      const saturdayDate = item.saturdayDate?.trim();
+      const candidateDate = item.candidateDate?.trim();
+      const reason = item.reason?.trim() || "AI提案";
+      if (!staffSet.has(staffName) || !dateSet.has(saturdayDate) || !dateSet.has(candidateDate)) {
+        continue;
+      }
+      if (!isSaturdayDate(saturdayDate)) {
+        continue;
+      }
+      const candidateWeekday = new Date(`${candidateDate}T00:00:00`).getDay();
+      if (candidateWeekday < 1 || candidateWeekday > 5) {
+        continue;
+      }
+      if (!weekDatesForSaturday(saturdayDate).includes(candidateDate)) {
+        continue;
+      }
+      const key = `${staffName}|${saturdayDate}|${candidateDate}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      result.push({ staffName, saturdayDate, candidateDate, reason });
+    }
+    return result;
+  }
+
+  function sanitizeSupplementGuidance(text: string): { displayText: string; aiUsableText: string } {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return { displayText: "", aiUsableText: "" };
+    }
+    const hardConstraintLike = ["全員", "必ず", "絶対", "強制"];
+    if (hardConstraintLike.some((token) => trimmed.includes(token))) {
+      return {
+        displayText: `${trimmed}（補足解釈は提案扱い。最終判断は既存ルールを優先）`,
+        aiUsableText: ""
+      };
+    }
+    return { displayText: trimmed, aiUsableText: trimmed };
+  }
+
   function applyAiOperations(operations: AiNaturalLanguageOperation[]): { applied: number; skipped: string[] } {
     const nextCells = { ...cells };
     const nextOffByDateAndStaff = { ...offByDateAndStaff };
@@ -1968,9 +2047,10 @@ export default function HomePage() {
         supplementNote: note
       });
       const guidance = result?.guidance?.trim() ?? "";
+      const normalized = sanitizeSupplementGuidance(guidance);
       const rules = (result?.priorityRules ?? []).filter((item) => item.trim().length > 0);
-      if (guidance) {
-        setAiSupplementGuidance(guidance);
+      if (normalized.displayText) {
+        setAiSupplementGuidance(normalized.displayText);
       }
       if (rules.length > 0) {
         setAiSummaryBullets(rules.slice(0, 5));
@@ -2036,16 +2116,22 @@ export default function HomePage() {
       const orderedRuleSteps = [...rules.creationOrder].sort((a, b) => a.order - b.order).map((item) => item.title);
       const titleAt = (index: number, fallback: string): string => orderedRuleSteps[index] ?? fallback;
       let supplementGuidance = "";
+      let supplementGuidanceForAi = "";
       if (useAiAssistance && supplementNote.trim().length > 0) {
         const guidanceResult = await callShiftAi<{ guidance?: string; priorityRules?: string[] }>("interpretSupplementNote", {
           month,
           supplementNote: supplementNote.trim(),
           creationOrder: orderedRuleSteps
         });
-        supplementGuidance = guidanceResult?.guidance?.trim() ?? "";
+        const normalizedGuidance = sanitizeSupplementGuidance(guidanceResult?.guidance?.trim() ?? "");
+        supplementGuidance = normalizedGuidance.displayText;
+        supplementGuidanceForAi = normalizedGuidance.aiUsableText;
         if (supplementGuidance) {
           setAiSupplementGuidance(supplementGuidance);
           appendLog("info", "rules", `AI補足解釈: ${supplementGuidance}`);
+          if (!supplementGuidanceForAi) {
+            appendLog("warn", "rules", "補足解釈が強すぎるため、AI再ランキングには反映しません。");
+          }
         }
       }
 
@@ -2525,7 +2611,7 @@ export default function HomePage() {
                   stepLabel,
                   ruleTitle,
                   supplementNote: supplementNote.trim(),
-                  supplementGuidance,
+                  supplementGuidance: supplementGuidanceForAi,
                   candidates: rankingTarget.map((name) => ({
                     staffName: name,
                     isFullTime: fullTimeSet.has(name),
@@ -2986,10 +3072,15 @@ export default function HomePage() {
         const shortageSuggestionResult = await callShiftAi<{ suggestions?: AiShortageSuggestion[] }>("suggestShortageFixes", {
           month,
           supplementNote: supplementNote.trim(),
-          supplementGuidance,
+          supplementGuidance: supplementGuidanceForAi,
           shortages: shortageCandidatePayload
         });
-        setAiShortageSuggestions((shortageSuggestionResult?.suggestions ?? []).slice(0, 5));
+        const validShortageSuggestions = sanitizeAiShortageSuggestions(shortageSuggestionResult?.suggestions ?? []).slice(0, 5);
+        const removedShortageSuggestionCount = (shortageSuggestionResult?.suggestions ?? []).length - validShortageSuggestions.length;
+        if (removedShortageSuggestionCount > 0) {
+          appendLog("warn", "analysis", `AI不足提案を ${removedShortageSuggestionCount} 件除外（無効な職員名/日付/シフトを検出）`);
+        }
+        setAiShortageSuggestions(validShortageSuggestions);
 
         const compensatorySuggestionResult = await callShiftAi<{ suggestions?: AiCompensatorySuggestion[] }>(
           "suggestCompensatoryHolidays",
@@ -3001,7 +3092,13 @@ export default function HomePage() {
             saturdayAssignmentCountByStaff: Array.from(saturdayAssignmentCountByStaff.entries()).map(([name, count]) => ({ name, count }))
           }
         );
-        setAiCompensatorySuggestions((compensatorySuggestionResult?.suggestions ?? []).slice(0, 8));
+        const validCompensatorySuggestions = sanitizeAiCompensatorySuggestions(compensatorySuggestionResult?.suggestions ?? []).slice(0, 8);
+        const removedCompensatorySuggestionCount =
+          (compensatorySuggestionResult?.suggestions ?? []).length - validCompensatorySuggestions.length;
+        if (removedCompensatorySuggestionCount > 0) {
+          appendLog("warn", "analysis", `AI振替提案を ${removedCompensatorySuggestionCount} 件除外（具体日付の不足や同週条件違反）`);
+        }
+        setAiCompensatorySuggestions(validCompensatorySuggestions);
 
         const summarizeResult = await callShiftAi<{ summary?: string; bullets?: string[] }>("summarizeLogs", {
           month,

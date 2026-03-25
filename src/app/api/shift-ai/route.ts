@@ -126,7 +126,7 @@ function buildMessages(action: AiAction, payload: unknown): PromptMessage[] {
     return [
       {
         role: "system",
-        content: `${systemBase}\n出力形式: {"suggestions":[{"date":string,"time":string,"staffName":string,"shiftType":string,"reason":string}]}\n最大3件、実現性の高い提案を返す。`
+        content: `${systemBase}\n出力形式: {"suggestions":[{"date":string,"time":string,"staffName":string,"shiftType":string,"reason":string}]}\n最大3件、実現性の高い提案を返す。staffNameは候補にある実在の個人名のみ（「全員」「常勤スタッフ」など集合名は禁止）。date/timeは具体値のみ。`
       },
       { role: "user", content: sharedUser }
     ];
@@ -136,7 +136,7 @@ function buildMessages(action: AiAction, payload: unknown): PromptMessage[] {
     return [
       {
         role: "system",
-        content: `${systemBase}\n出力形式: {"suggestions":[{"staffName":string,"saturdayDate":string,"candidateDate":string,"reason":string}]}\n最大5件。`
+        content: `${systemBase}\n出力形式: {"suggestions":[{"staffName":string,"saturdayDate":string,"candidateDate":string,"reason":string}]}\n最大5件。必ず具体的なYYYY-MM-DDを返す。「4月中」「平日」など曖昧表現は禁止。staffNameは実在の個人名のみ。`
       },
       { role: "user", content: sharedUser }
     ];
@@ -156,7 +156,7 @@ function buildMessages(action: AiAction, payload: unknown): PromptMessage[] {
     return [
       {
         role: "system",
-        content: `${systemBase}\n出力形式: {"guidance":string,"priorityRules":string[]}\nguidanceは短文、priorityRulesは最大5件。`
+        content: `${systemBase}\n出力形式: {"guidance":string,"priorityRules":string[]}\nguidanceは短文、priorityRulesは最大5件。補足事項は強制命令ではなく優先度ヒントとして解釈し、過剰に断定しない。`
       },
       { role: "user", content: sharedUser }
     ];
