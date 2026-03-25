@@ -80,6 +80,13 @@ type AiNaturalLanguageOperation = {
   reason?: string;
 };
 
+type AiResponseLogItem = {
+  id: string;
+  label: string;
+  text: string;
+  status: "streaming" | "done" | "error";
+};
+
 function createShiftColumnId(shiftType: string): string {
   return `${shiftType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -317,6 +324,10 @@ export default function HomePage() {
   const [aiNaturalLanguageInstruction, setAiNaturalLanguageInstruction] = useState("");
   const [aiNaturalLanguageResult, setAiNaturalLanguageResult] = useState("");
   const [aiActionRunning, setAiActionRunning] = useState(false);
+  const [aiStreamingLabel, setAiStreamingLabel] = useState("");
+  const [aiStreamingText, setAiStreamingText] = useState("");
+  const [aiStreamingActive, setAiStreamingActive] = useState(false);
+  const [aiResponseLogs, setAiResponseLogs] = useState<AiResponseLogItem[]>([]);
   const autoGenerateRunningRef = useRef(false);
   const topScrollRef = useRef<HTMLDivElement | null>(null);
   const bottomScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1628,6 +1639,10 @@ export default function HomePage() {
     setAiSupplementGuidance("");
     setAiNaturalLanguageInstruction("");
     setAiNaturalLanguageResult("");
+    setAiStreamingLabel("");
+    setAiStreamingText("");
+    setAiStreamingActive(false);
+    setAiResponseLogs([]);
     setPlannerStep((prev) => (prev <= 2 ? prev : 2));
   }
 
@@ -1741,7 +1756,143 @@ export default function HomePage() {
     return items;
   }
 
-  async function callShiftAi<T>(action: string, payload: unknown): Promise<T | null> {
+  function appendAiResponseLog(item: AiResponseLogItem): void {
+    setAiResponseLogs((prev) => {
+      const next = [...prev, item];
+      return next.length > 80 ? next.slice(next.length - 80) : next;
+    });
+  }
+
+  async function callShiftAiStream<T>(
+    action: string,
+    payload: unknown,
+    streamLabel: string
+  ): Promise<T | null> {
+    try {
+      const responseLogId = `${action}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      appendAiResponseLog({
+        id: responseLogId,
+        label: streamLabel,
+        text: "",
+        status: "streaming"
+      });
+      setAiStreamingLabel(streamLabel);
+      setAiStreamingText("");
+      setAiStreamingActive(true);
+      const response = await fetch("/api/shift-ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, payload, stream: true })
+      });
+      if (!response.ok || !response.body) {
+        const fallback = (await response.json().catch(() => ({ error: "AI処理に失敗しました。" }))) as { error?: string };
+        if (fallback.error) {
+          setAutoGenerateError(fallback.error);
+          setAiResponseLogs((prev) =>
+            prev.map((item) => (item.id === responseLogId ? { ...item, status: "error", text: fallback.error ?? "" } : item))
+          );
+        }
+        setAiStreamingActive(false);
+        return null;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalResult: T | null = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+        for (const eventText of events) {
+          const dataLine = eventText
+            .split("\n")
+            .find((line) => line.startsWith("data:"));
+          if (!dataLine) {
+            continue;
+          }
+          const jsonText = dataLine.slice(5).trim();
+          if (!jsonText) {
+            continue;
+          }
+          let payloadData: unknown;
+          try {
+            payloadData = JSON.parse(jsonText);
+          } catch {
+            continue;
+          }
+          const event = payloadData as { type?: string; chunk?: string; message?: string; result?: T };
+          if (event.type === "chunk" && typeof event.chunk === "string") {
+            setAiStreamingText((prev) => `${prev}${event.chunk}`);
+          setAiResponseLogs((prev): AiResponseLogItem[] =>
+              prev.map((item) =>
+                item.id === responseLogId ? { ...item, text: `${item.text}${event.chunk}` } : item
+              )
+            );
+          }
+          if (event.type === "error") {
+            setAutoGenerateError(event.message ?? "AI処理に失敗しました。");
+            setAiResponseLogs((prev): AiResponseLogItem[] =>
+              prev.map((item) =>
+                item.id === responseLogId
+                  ? { ...item, status: "error", text: event.message ?? "AI処理に失敗しました。" }
+                  : item
+              )
+            );
+          }
+          if (event.type === "done") {
+            finalResult = event.result ?? null;
+            setAiResponseLogs((prev): AiResponseLogItem[] =>
+              prev.map((item) => {
+                if (item.id !== responseLogId) {
+                  return item;
+                }
+                const doneText = item.text.trim().length > 0
+                  ? item.text
+                  : event.result
+                    ? JSON.stringify(event.result, null, 2)
+                    : "AI応答を受信しました。";
+                return { ...item, status: "done", text: doneText };
+              })
+            );
+          }
+        }
+      }
+      setAiStreamingActive(false);
+      return finalResult;
+    } catch (error) {
+      setAiStreamingActive(false);
+      setAutoGenerateError(error instanceof Error ? error.message : "AI処理に失敗しました。");
+      return null;
+    }
+  }
+
+  function formatAiResultPreview(action: string, result: unknown): string {
+    if (action === "rerankCandidates") {
+      const typed = result as { rankedStaffNames?: string[]; reason?: string };
+      const ranked = (typed.rankedStaffNames ?? []).slice(0, 5);
+      return `候補順: ${ranked.join(" -> ")}${typed.reason ? ` / 理由: ${typed.reason}` : ""}`;
+    }
+    const raw = JSON.stringify(result, null, 2);
+    if (raw.length <= 1200) {
+      return raw;
+    }
+    return `${raw.slice(0, 1200)}\n...`;
+  }
+
+  async function callShiftAi<T>(
+    action: string,
+    payload: unknown,
+    options?: { stream?: boolean; streamLabel?: string }
+  ): Promise<T | null> {
+    if (options?.stream) {
+      return callShiftAiStream<T>(action, payload, options.streamLabel ?? `${action} 実行中`);
+    }
     try {
       const response = await fetch("/api/shift-ai", {
         method: "POST",
@@ -1752,9 +1903,21 @@ export default function HomePage() {
       if (!response.ok || !data.result) {
         if (data.error) {
           setAutoGenerateError(data.error);
+          appendAiResponseLog({
+            id: `${action}-error-${Date.now()}`,
+            label: `AI ${action}`,
+            text: data.error,
+            status: "error"
+          });
         }
         return null;
       }
+      appendAiResponseLog({
+        id: `${action}-done-${Date.now()}`,
+        label: `AI ${action}`,
+        text: formatAiResultPreview(action, data.result),
+        status: "done"
+      });
       return data.result;
     } catch (error) {
       setAutoGenerateError(error instanceof Error ? error.message : "AI処理に失敗しました。");
@@ -1999,7 +2162,7 @@ export default function HomePage() {
         assignments,
         offRecords,
         staffProfiles
-      });
+      }, { stream: true, streamLabel: "AIが修正案を作成中..." });
       const operations = result?.operations ?? [];
       if (operations.length === 0) {
         setAiNaturalLanguageResult("変更提案が見つかりませんでした。");
@@ -2045,7 +2208,7 @@ export default function HomePage() {
       const result = await callShiftAi<{ guidance?: string; priorityRules?: string[] }>("interpretSupplementNote", {
         month,
         supplementNote: note
-      });
+      }, { stream: true, streamLabel: "AIが補足事項を解釈中..." });
       const guidance = result?.guidance?.trim() ?? "";
       const normalized = sanitizeSupplementGuidance(guidance);
       const rules = (result?.priorityRules ?? []).filter((item) => item.trim().length > 0);
@@ -2079,6 +2242,10 @@ export default function HomePage() {
     setAiLogSummary("");
     setAiSummaryBullets([]);
     setAiSupplementGuidance("");
+    setAiStreamingLabel("");
+    setAiStreamingText("");
+    setAiStreamingActive(false);
+    setAiResponseLogs([]);
     autoGenerateRunningRef.current = true;
     setAutoGenerating(true);
     // Ensure loading state is painted before heavy synchronous work starts.
@@ -2122,7 +2289,7 @@ export default function HomePage() {
           month,
           supplementNote: supplementNote.trim(),
           creationOrder: orderedRuleSteps
-        });
+        }, { stream: true, streamLabel: "AIが補足事項を解釈中..." });
         const normalizedGuidance = sanitizeSupplementGuidance(guidanceResult?.guidance?.trim() ?? "");
         supplementGuidance = normalizedGuidance.displayText;
         supplementGuidanceForAi = normalizedGuidance.aiUsableText;
@@ -3074,7 +3241,7 @@ export default function HomePage() {
           supplementNote: supplementNote.trim(),
           supplementGuidance: supplementGuidanceForAi,
           shortages: shortageCandidatePayload
-        });
+        }, { stream: true, streamLabel: "AIが未充足提案を生成中..." });
         const validShortageSuggestions = sanitizeAiShortageSuggestions(shortageSuggestionResult?.suggestions ?? []).slice(0, 5);
         const removedShortageSuggestionCount = (shortageSuggestionResult?.suggestions ?? []).length - validShortageSuggestions.length;
         if (removedShortageSuggestionCount > 0) {
@@ -3090,7 +3257,8 @@ export default function HomePage() {
             unresolvedCompensatoryRequests,
             assignmentCountByStaff: Array.from(assignmentCountByStaff.entries()).map(([name, count]) => ({ name, count })),
             saturdayAssignmentCountByStaff: Array.from(saturdayAssignmentCountByStaff.entries()).map(([name, count]) => ({ name, count }))
-          }
+          },
+          { stream: true, streamLabel: "AIが振替候補を生成中..." }
         );
         const validCompensatorySuggestions = sanitizeAiCompensatorySuggestions(compensatorySuggestionResult?.suggestions ?? []).slice(0, 8);
         const removedCompensatorySuggestionCount =
@@ -3108,7 +3276,7 @@ export default function HomePage() {
             step: item.step,
             message: item.message
           }))
-        });
+        }, { stream: true, streamLabel: "AIが先生向け要約を作成中..." });
         setAiLogSummary(summarizeResult?.summary?.trim() ?? "");
         setAiSummaryBullets((summarizeResult?.bullets ?? []).filter((item) => item.trim().length > 0).slice(0, 5));
       }
@@ -3165,9 +3333,9 @@ export default function HomePage() {
       appendLog("warn", "error", error instanceof Error ? error.message : "下書き作成に失敗しました。");
       setAutoGenerateLogs(executionLogs);
     } finally {
+      setAiStreamingActive(false);
       setAutoGenerating(false);
       autoGenerateRunningRef.current = false;
-      setShowCreateStepModal(false);
     }
   }
 
@@ -4127,6 +4295,50 @@ export default function HomePage() {
                 })}
               </div>
               <p className="mt-2 text-sm font-semibold text-orange-800">現在: Step {plannerStep} / 6</p>
+              {aiStreamingActive || aiStreamingText ? (
+                <div className="mt-3 rounded-md border border-orange-200 bg-white p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold text-orange-900">{aiStreamingLabel || "AI応答"}</p>
+                    {aiStreamingActive ? (
+                      <span className="inline-flex items-center gap-2 text-xs font-semibold text-orange-700">
+                        <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-orange-300 border-t-orange-600" />
+                        生成中
+                      </span>
+                    ) : (
+                      <span className="text-xs text-orange-700">完了</span>
+                    )}
+                  </div>
+                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded bg-orange-50 px-3 py-2 text-xs text-orange-900">
+                    {aiStreamingText || "AIの応答待ちです..."}
+                  </pre>
+                </div>
+              ) : null}
+              {aiResponseLogs.length > 0 ? (
+                <div className="mt-3 rounded-md border border-orange-200 bg-white p-3">
+                  <p className="text-sm font-semibold text-orange-900">AIレスポンス履歴</p>
+                  <div className="mt-2 max-h-64 space-y-2 overflow-auto">
+                    {aiResponseLogs.map((item) => (
+                      <div key={item.id} className="rounded bg-orange-50 px-3 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-semibold text-orange-900">{item.label}</p>
+                          <span
+                            className={`text-[10px] font-semibold ${
+                              item.status === "error"
+                                ? "text-red-700"
+                                : item.status === "streaming"
+                                  ? "text-orange-700"
+                                  : "text-emerald-700"
+                            }`}
+                          >
+                            {item.status === "streaming" ? "生成中" : item.status === "error" ? "エラー" : "完了"}
+                          </span>
+                        </div>
+                        <pre className="mt-1 whitespace-pre-wrap text-[11px] text-orange-900">{item.text || "（応答待ち）"}</pre>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
               <div className="mt-4 rounded-md bg-orange-50 p-3">
                 {plannerStep === 1 ? (
