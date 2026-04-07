@@ -8,6 +8,9 @@
 # production
 /build
 
+# typescript incremental cache
+*.tsbuildinfo
+
 # misc
 .DS_Store
 *.pem

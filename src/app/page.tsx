@@ -27,6 +27,43 @@ const REQUIRED_STAFF_TIMES = [
 const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"] as const;
 const DATE_GROUP_ROW_COUNT = SHIFT_CLASS_GROUPS.length + 1;
 
+/** マスタの `nurseryClasses.ageGroup` → シフト表の年齢帯行 */
+const NURSERY_AGE_GROUP_TO_SHIFT_CLASS: Record<string, ShiftClassGroup> = {
+  "0-1歳児": "0-1",
+  "2-3歳児": "2-3",
+  "4-5歳児": "4-5"
+};
+
+function splitMainClassNames(value: string): string[] {
+  return value
+    .split(/[,，、]/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function shiftClassGroupsForStaffMainClass(
+  mainClassRaw: string,
+  nurseryClasses: MasterData["nurseryClasses"]
+): ShiftClassGroup[] {
+  const parts = splitMainClassNames(mainClassRaw);
+  if (parts.length === 0) {
+    return [];
+  }
+  const byName = new Map(nurseryClasses.map((item) => [item.name.trim(), item]));
+  const found = new Set<ShiftClassGroup>();
+  for (const part of parts) {
+    const nurseryClass = byName.get(part);
+    if (!nurseryClass) {
+      continue;
+    }
+    const mapped = NURSERY_AGE_GROUP_TO_SHIFT_CLASS[nurseryClass.ageGroup.trim()];
+    if (mapped) {
+      found.add(mapped);
+    }
+  }
+  return Array.from(found);
+}
+
 type ShortageItem = {
   date: string;
   time: string;
@@ -110,6 +147,25 @@ function currentMonth(): string {
 
 function keyOf(date: string, columnId: string, classGroup: ShiftClassGroup): string {
   return `${date}|${classGroup}|${columnId}`;
+}
+
+function columnIdFromShiftCellKey(cellKey: string): string | null {
+  const parts = cellKey.split("|");
+  if (parts.length < 3) {
+    return null;
+  }
+  return parts.slice(2).join("|");
+}
+
+function filterShiftCellsByColumnIds(cells: Record<string, string>, allowedColumnIds: Set<string>): Record<string, string> {
+  const next: Record<string, string> = {};
+  for (const [key, value] of Object.entries(cells)) {
+    const colId = columnIdFromShiftCellKey(key);
+    if (colId && allowedColumnIds.has(colId)) {
+      next[key] = value;
+    }
+  }
+  return next;
 }
 
 function timeToMinutes(value: string): number {
@@ -1668,13 +1724,14 @@ export default function HomePage() {
   function removeStaffAssignmentFromDate(
     sourceCells: Record<string, string>,
     date: string,
-    staffName: string
+    staffName: string,
+    columns: ShiftColumn[] = shiftColumns
   ): { nextCells: Record<string, string>; removed: boolean; removedShiftTypes: string[] } {
     const nextCells = { ...sourceCells };
     let removed = false;
     const removedShiftTypes: string[] = [];
     for (const classGroup of SHIFT_CLASS_GROUPS) {
-      for (const column of shiftColumns) {
+      for (const column of columns) {
         const cellKey = keyOf(date, column.id, classGroup.key);
         if ((nextCells[cellKey] ?? "").trim() === staffName) {
           delete nextCells[cellKey];
@@ -1690,13 +1747,14 @@ export default function HomePage() {
     sourceCells: Record<string, string>,
     date: string,
     fromStaffName: string,
-    toStaffName: string
+    toStaffName: string,
+    columns: ShiftColumn[] = shiftColumns
   ): { nextCells: Record<string, string>; replaced: boolean; replacedShiftTypes: string[] } {
     const nextCells = { ...sourceCells };
     let replaced = false;
     const replacedShiftTypes: string[] = [];
     for (const classGroup of SHIFT_CLASS_GROUPS) {
-      for (const column of shiftColumns) {
+      for (const column of columns) {
         const cellKey = keyOf(date, column.id, classGroup.key);
         if ((nextCells[cellKey] ?? "").trim() === fromStaffName) {
           nextCells[cellKey] = toStaffName;
@@ -1708,12 +1766,16 @@ export default function HomePage() {
     return { nextCells, replaced, replacedShiftTypes };
   }
 
-  function assignedCountByTimeForDate(sourceCells: Record<string, string>, date: string): number[] {
+  function assignedCountByTimeForDate(
+    sourceCells: Record<string, string>,
+    date: string,
+    columns: ShiftColumn[] = shiftColumns
+  ): number[] {
     return REQUIRED_STAFF_TIMES.map((time) => {
       const targetMinutes = timeToMinutes(time);
       const presentStaff = new Set<string>();
       for (const classGroup of SHIFT_CLASS_GROUPS) {
-        for (const column of shiftColumns) {
+        for (const column of columns) {
           const staffName = (sourceCells[keyOf(date, column.id, classGroup.key)] ?? "").trim();
           if (!staffName) {
             continue;
@@ -1733,13 +1795,13 @@ export default function HomePage() {
     });
   }
 
-  function shortageItemsForCells(sourceCells: Record<string, string>): ShortageItem[] {
+  function shortageItemsForCells(sourceCells: Record<string, string>, columns: ShiftColumn[] = shiftColumns): ShortageItem[] {
     const items: ShortageItem[] = [];
     for (const date of dates) {
       if (activeAutoGenerationPolicy.skipSundayProcessing && isSundayDate(date)) {
         continue;
       }
-      const assignedCounts = assignedCountByTimeForDate(sourceCells, date);
+      const assignedCounts = assignedCountByTimeForDate(sourceCells, date, columns);
       const requiredCounts = effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
       requiredCounts.forEach((requiredCount, index) => {
         const assigned = assignedCounts[index] ?? 0;
@@ -2305,6 +2367,9 @@ export default function HomePage() {
       let nextCells: Record<string, string> = {};
       const nextOffByDateAndStaff = { ...offByDateAndStaff };
       const snapshots: AutoGenerationSnapshot[] = [];
+      const initialShiftColumnsForAuto: ShiftColumn[] = [...shiftColumns];
+      let workingShiftColumns: ShiftColumn[] = [...shiftColumns];
+      let autoGenColumnsDirty = false;
       const pushSnapshot = (id: string, label: string, note: string): void => {
         snapshots.push({
           id,
@@ -2324,7 +2389,17 @@ export default function HomePage() {
               )
             : 0;
           const target = snapshots[targetIndex] ?? snapshots[0];
-          setCells(target.cells);
+          let targetCells = target.cells;
+          if (preferredSnapshotId === "hard-rule-failed") {
+            targetCells = filterShiftCellsByColumnIds(
+              target.cells,
+              new Set(initialShiftColumnsForAuto.map((column) => column.id))
+            );
+          }
+          setCells(targetCells);
+          if (preferredSnapshotId === "finish" && autoGenColumnsDirty) {
+            setShiftColumns(workingShiftColumns);
+          }
           setOffByDateAndStaff(target.offByDateAndStaff);
           setAutoGenerateLogs(target.logs);
           setViewMode("staff");
@@ -2338,6 +2413,20 @@ export default function HomePage() {
       const staffPool = Array.from(new Set([...fullTimeNames, ...partTimeNames]));
       const fullTimeSet = new Set(fullTimeNames);
       const partByName = new Map(partStaff.map((item) => [item.normalizedName, item]));
+      const preferredShiftClassByName = new Map<string, ShiftClassGroup[]>();
+      for (const item of masterData.fullTimeStaff) {
+        const name = item.name.trim();
+        if (name.length > 0) {
+          preferredShiftClassByName.set(name, shiftClassGroupsForStaffMainClass(item.mainClass, masterData.nurseryClasses));
+        }
+      }
+      for (const item of masterData.partTimeStaff) {
+        const name = item.name.trim();
+        if (name.length > 0) {
+          preferredShiftClassByName.set(name, shiftClassGroupsForStaffMainClass(item.mainClass, masterData.nurseryClasses));
+        }
+      }
+      let columnExtensionsRemaining = 24;
       const fullTimeShiftUsageByName = new Map<string, Map<string, number>>(
         fullTimeNames.map((name) => [name, new Map<string, number>()])
       );
@@ -2373,7 +2462,7 @@ export default function HomePage() {
       const assignmentCountByStaff = new Map(staffPool.map((name) => [name, 0]));
       const saturdayAssignmentCountByStaff = new Map(staffPool.map((name) => [name, 0]));
       const assignedByDate = new Map<string, Set<string>>(dates.map((date) => [date, new Set<string>()]));
-      const slotCapacityPerDate = shiftColumns.length * SHIFT_CLASS_GROUPS.length;
+      const getSlotCapacity = (): number => workingShiftColumns.length * SHIFT_CLASS_GROUPS.length;
       const requiredPeak = Math.max(
         3,
         ...dates.map((date) => Math.max(...(effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0))))
@@ -2420,15 +2509,24 @@ export default function HomePage() {
       const earlyShift = shiftTypesByStart[0] ?? shiftColumns[0]?.shiftType ?? "";
       const lateShift = shiftTypesByStart[shiftTypesByStart.length - 1] ?? shiftColumns[0]?.shiftType ?? "";
       const middleShift = shiftTypesByStart[Math.floor(shiftTypesByStart.length / 2)] ?? earlyShift;
-      const shiftStartOrder = new Map(shiftTypesByStart.map((shiftType, index) => [shiftType, index]));
-      const sortedShiftColumns = [...shiftColumns].sort((a, b) => {
-        const aIndex = shiftStartOrder.get(a.shiftType) ?? Number.MAX_SAFE_INTEGER;
-        const bIndex = shiftStartOrder.get(b.shiftType) ?? Number.MAX_SAFE_INTEGER;
-        if (aIndex !== bIndex) {
-          return aIndex - bIndex;
-        }
-        return a.id.localeCompare(b.id, "ja");
-      });
+      const buildSortedShiftColumns = (cols: ShiftColumn[]): ShiftColumn[] => {
+        const orderTypes = cols
+          .map((column) => ({
+            shiftType: column.shiftType,
+            minutes: timeToMinutes(shiftPatternByCode.get(column.shiftType)?.startTime ?? "23:59")
+          }))
+          .sort((a, b) => a.minutes - b.minutes)
+          .map((item) => item.shiftType);
+        const startOrder = new Map(orderTypes.map((shiftType, index) => [shiftType, index]));
+        return [...cols].sort((a, b) => {
+          const aIndex = startOrder.get(a.shiftType) ?? Number.MAX_SAFE_INTEGER;
+          const bIndex = startOrder.get(b.shiftType) ?? Number.MAX_SAFE_INTEGER;
+          if (aIndex !== bIndex) {
+            return aIndex - bIndex;
+          }
+          return a.id.localeCompare(b.id, "ja");
+        });
+      };
       const baseDateIndexByDate = new Map(dates.map((date, index) => [date, index]));
       const weekKeyByDate = new Map<string, string>();
       const weekDatesByKey = new Map<string, string[]>();
@@ -2465,7 +2563,7 @@ export default function HomePage() {
                 if (nextOffByDateAndStaff[`${candidateDate}|${name}`]) {
                   return false;
                 }
-                return shiftColumns.some((column) => canWorkOnShift(candidateDate, column.shiftType, name));
+                return workingShiftColumns.some((column) => canWorkOnShift(candidateDate, column.shiftType, name));
               }).length;
               return [weekKey, Math.min(5, availableDays)];
             })
@@ -2554,15 +2652,32 @@ export default function HomePage() {
         const endMinutes = timeToMinutes(pattern.endTime);
         return targetMinutes >= startMinutes && targetMinutes < endMinutes;
       };
+      const scoreShiftTypeVsShortages = (shiftType: string, shortages: number[]): number => {
+        const pattern = shiftPatternByCode.get(shiftType);
+        if (!pattern) {
+          return 0;
+        }
+        const startMinutes = timeToMinutes(pattern.startTime);
+        const endMinutes = timeToMinutes(pattern.endTime);
+        let score = 0;
+        REQUIRED_STAFF_TIMES.forEach((time, index) => {
+          const targetMinutes = timeToMinutes(time);
+          if (targetMinutes >= startMinutes && targetMinutes < endMinutes) {
+            score += shortages[index] ?? 0;
+          }
+        });
+        return score;
+      };
       const findAssignableSlot = (
         date: string,
         staffName: string,
         preferredShiftType?: string,
         requiredTime?: string
       ): { classGroup: ShiftClassGroup; column: ShiftColumn } | null => {
+        const sorted = buildSortedShiftColumns(workingShiftColumns);
         const columnsByRequiredTime = requiredTime
-          ? sortedShiftColumns.filter((column) => shiftTypeCoversTime(column.shiftType, requiredTime))
-          : sortedShiftColumns;
+          ? sorted.filter((column) => shiftTypeCoversTime(column.shiftType, requiredTime))
+          : sorted;
         const preferredColumns = preferredShiftType
           ? columnsByRequiredTime.filter((column) => column.shiftType === preferredShiftType)
           : [];
@@ -2572,27 +2687,12 @@ export default function HomePage() {
           return null;
         }
         const requiredByTime = effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
-        const currentCounts = assignedCountByTimeForDate(nextCells, date);
+        const currentCounts = assignedCountByTimeForDate(nextCells, date, workingShiftColumns);
         const shortages = requiredByTime.map((required, index) => Math.max(0, required - (currentCounts[index] ?? 0)));
-        const scoreForShiftType = (shiftType: string): number => {
-          const pattern = shiftPatternByCode.get(shiftType);
-          if (!pattern) {
-            return 0;
-          }
-          const startMinutes = timeToMinutes(pattern.startTime);
-          const endMinutes = timeToMinutes(pattern.endTime);
-          let score = 0;
-          REQUIRED_STAFF_TIMES.forEach((time, index) => {
-            const targetMinutes = timeToMinutes(time);
-            if (targetMinutes >= startMinutes && targetMinutes < endMinutes) {
-              score += shortages[index] ?? 0;
-            }
-          });
-          return score;
-        };
+        const preferredGroups = preferredShiftClassByName.get(staffName) ?? [];
 
         let best:
-          | { classGroup: ShiftClassGroup; column: ShiftColumn; score: number; bonus: number; usage: number }
+          | { classGroup: ShiftClassGroup; column: ShiftColumn; score: number; bonus: number; usage: number; classMatch: number }
           | null = null;
         for (const classGroup of SHIFT_CLASS_GROUPS) {
           for (const column of orderedColumns) {
@@ -2603,19 +2703,21 @@ export default function HomePage() {
             if (!canWorkOnShift(date, column.shiftType, staffName)) {
               continue;
             }
-            const baseScore = scoreForShiftType(column.shiftType);
+            const baseScore = scoreShiftTypeVsShortages(column.shiftType, shortages);
             const bonus = preferredShiftType && column.shiftType === preferredShiftType ? 1 : 0;
             const usage =
               preventFixedFullTimeShift && fullTimeSet.has(staffName) ? getFullTimeShiftUsageCount(staffName, column.shiftType) : 0;
             const usagePenalty = preventFixedFullTimeShift && fullTimeSet.has(staffName) ? usage * 0.35 : 0;
             const score = baseScore + bonus - usagePenalty;
+            const classMatch = preferredGroups.length === 0 ? 0 : preferredGroups.includes(classGroup.key) ? 1 : 0;
             if (
               !best ||
               score > best.score ||
-              (score === best.score && bonus > best.bonus) ||
-              (score === best.score && bonus === best.bonus && usage < best.usage)
+              (score === best.score && classMatch > best.classMatch) ||
+              (score === best.score && classMatch === best.classMatch && bonus > best.bonus) ||
+              (score === best.score && classMatch === best.classMatch && bonus === best.bonus && usage < best.usage)
             ) {
-              best = { classGroup: classGroup.key, column, score, bonus, usage };
+              best = { classGroup: classGroup.key, column, score, bonus, usage, classMatch };
             }
           }
         }
@@ -2623,6 +2725,74 @@ export default function HomePage() {
           return null;
         }
         return { classGroup: best.classGroup, column: best.column };
+      };
+      const tryDuplicateShiftColumn = (date: string, shortageTime: string | undefined, stepLabel: string): boolean => {
+        if (!shortageTime || columnExtensionsRemaining <= 0) {
+          return false;
+        }
+        const sorted = buildSortedShiftColumns(workingShiftColumns);
+        const covering = sorted.filter((column) => shiftTypeCoversTime(column.shiftType, shortageTime));
+        if (covering.length === 0) {
+          return false;
+        }
+        let hasEmptyCoveringSlot = false;
+        for (const column of covering) {
+          for (const classGroup of SHIFT_CLASS_GROUPS) {
+            const cellKey = keyOf(date, column.id, classGroup.key);
+            if (!(nextCells[cellKey] ?? "").trim()) {
+              hasEmptyCoveringSlot = true;
+              break;
+            }
+          }
+          if (hasEmptyCoveringSlot) {
+            break;
+          }
+        }
+        if (hasEmptyCoveringSlot) {
+          return false;
+        }
+        const requiredByTime = effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0);
+        const currentCounts = assignedCountByTimeForDate(nextCells, date, workingShiftColumns);
+        const shortages = requiredByTime.map((required, index) => Math.max(0, required - (currentCounts[index] ?? 0)));
+        let bestType = covering[0].shiftType;
+        let bestScore = scoreShiftTypeVsShortages(bestType, shortages);
+        for (const column of covering) {
+          const s = scoreShiftTypeVsShortages(column.shiftType, shortages);
+          if (s > bestScore) {
+            bestScore = s;
+            bestType = column.shiftType;
+          }
+        }
+        if (bestScore <= 0) {
+          return false;
+        }
+        workingShiftColumns = [...workingShiftColumns, { id: createShiftColumnId(bestType), shiftType: bestType }];
+        columnExtensionsRemaining -= 1;
+        autoGenColumnsDirty = true;
+        const day = new Date(`${date}T00:00:00`).getDay();
+        const isSaturday = day === 6;
+        const requiredForDate = Math.max(
+          1,
+          ...(effectiveRequiredStaffCountByDate.get(date) ?? REQUIRED_STAFF_TIMES.map(() => 0)),
+          isSaturday && rules.saturdayRequirement.enabled ? rules.saturdayRequirement.minTotalStaff : 0
+        );
+        const availableStaff = staffPool.filter(
+          (name) => !nextOffByDateAndStaff[`${date}|${name}`] && workingShiftColumns.some((col) => canWorkOnShift(date, col.shiftType, name))
+        ).length;
+        const newTarget = Math.max(1, Math.min(requiredForDate, getSlotCapacity()));
+        const prevTarget = targetByDate.get(date) ?? 0;
+        targetByDate.set(date, Math.max(prevTarget, newTarget));
+        remainingByDate.set(date, (remainingByDate.get(date) ?? 0) + Math.max(0, newTarget - prevTarget) + SHIFT_CLASS_GROUPS.length);
+        const maxAssignable = Math.max(0, Math.min(availableStaff, getSlotCapacity()));
+        const curTarget = targetByDate.get(date) ?? 0;
+        overflowRemainingByDate.set(date, Math.max(0, maxAssignable - curTarget));
+        compensatoryQuotaByDate.set(date, Math.max(0, maxAssignable - curTarget));
+        appendLog(
+          "info",
+          stepLabel,
+          `${date}: ${shortageTime} の不足解消のため「${bestType}」列を追加（同一シフトパターンの列を複製）`
+        );
+        return true;
       };
       const isEarlyShiftType = (shiftType: string): boolean => {
         const pattern = shiftPatternByCode.get(shiftType);
@@ -2638,7 +2808,7 @@ export default function HomePage() {
         }
         const previousDate = dates[dateIndex - 1];
         for (const classGroup of SHIFT_CLASS_GROUPS) {
-          for (const column of shiftColumns) {
+          for (const column of workingShiftColumns) {
             const cellKey = keyOf(previousDate, column.id, classGroup.key);
             if ((nextCells[cellKey] ?? "").trim() !== staffName) {
               continue;
@@ -2668,10 +2838,11 @@ export default function HomePage() {
           isSaturday && rules.saturdayRequirement.enabled ? rules.saturdayRequirement.minTotalStaff : 0
         );
         const availableCount = staffPool.filter(
-          (name) => !nextOffByDateAndStaff[`${date}|${name}`] && shiftColumns.some((column) => canWorkOnShift(date, column.shiftType, name))
+          (name) => !nextOffByDateAndStaff[`${date}|${name}`] && workingShiftColumns.some((column) => canWorkOnShift(date, column.shiftType, name))
         ).length;
-        const targetCount = Math.max(1, Math.min(requiredForDate, slotCapacityPerDate));
-        const maxAssignableCount = Math.max(0, Math.min(availableCount, slotCapacityPerDate));
+        const slotCap = getSlotCapacity();
+        const targetCount = Math.max(1, Math.min(requiredForDate, slotCap));
+        const maxAssignableCount = Math.max(0, Math.min(availableCount, slotCap));
         targetByDate.set(date, targetCount);
         remainingByDate.set(date, targetCount);
         overflowRemainingByDate.set(date, Math.max(0, maxAssignableCount - targetCount));
@@ -2680,7 +2851,7 @@ export default function HomePage() {
           appendLog(
             "warn",
             "capacity",
-            `${date}: 必要目安${requiredForDate}人に対して、割当可能上限は${maxAssignableCount}人（可用${availableCount} / 枠${slotCapacityPerDate}）`
+            `${date}: 必要目安${requiredForDate}人に対して、割当可能上限は${maxAssignableCount}人（可用${availableCount} / 枠${slotCap}）`
           );
         } else {
           appendLog("info", "capacity", `${date}: 必要目安${requiredForDate}人 / 時間帯充足に向け最大${maxAssignableCount}人まで割当可能`);
@@ -2707,9 +2878,9 @@ export default function HomePage() {
           const phaseMaxAssignments = Math.max(0, maxAssignmentsPerDateResolver(date));
           let phaseAssigned = 0;
           let guard = 0;
-          while ((remainingByDate.get(date) ?? 0) > 0 && phaseAssigned < phaseMaxAssignments && guard < slotCapacityPerDate * 2) {
+          while ((remainingByDate.get(date) ?? 0) > 0 && phaseAssigned < phaseMaxAssignments && guard < getSlotCapacity() * 2) {
             guard += 1;
-            const shortagesForDate = shortageItemsForCells(nextCells)
+            const shortagesForDate = shortageItemsForCells(nextCells, workingShiftColumns)
               .filter((item) => item.date === date)
               .sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
             if (shortagesForDate.length === 0) {
@@ -2725,7 +2896,7 @@ export default function HomePage() {
             const availableCandidates = staffCandidates
               .filter((name) => !assignedNames.has(name))
               .filter((name) => !nextOffByDateAndStaff[`${date}|${name}`])
-              .filter((name) => shiftColumns.some((column) => canWorkOnShift(date, column.shiftType, name)));
+              .filter((name) => workingShiftColumns.some((column) => canWorkOnShift(date, column.shiftType, name)));
             const quotaCandidates = availableCandidates.filter((name) => hasRemainingFullTimeWeeklyQuota(name, date));
             const candidatePool = quotaCandidates.length > 0 ? quotaCandidates : availableCandidates;
 
@@ -2785,7 +2956,8 @@ export default function HomePage() {
                     monthlyAssignments: assignmentCountByStaff.get(name) ?? 0,
                     saturdayAssignments: saturdayAssignmentCountByStaff.get(name) ?? 0,
                     weeklyDaysTarget: partByName.get(name)?.weeklyDays ?? null,
-                    preferredShift: preferredShiftResolver(name)
+                    preferredShift: preferredShiftResolver(name),
+                    preferredClassGroups: preferredShiftClassByName.get(name) ?? []
                   }))
                 });
                 const ranked = (result?.rankedStaffNames ?? []).filter((name) => sortedByWorkload.includes(name));
@@ -2822,6 +2994,9 @@ export default function HomePage() {
               selected = selectSlotFromCandidates(staffOrder);
             }
             if (!selected) {
+              if (candidatePool.length > 0 && tryDuplicateShiftColumn(date, highestPriorityShortageTime, stepLabel)) {
+                continue;
+              }
               appendLog("warn", stepLabel, `${date}: 時間帯不足を埋める配置候補が見つからずフェーズを終了`);
               break;
             }
@@ -2955,12 +3130,12 @@ export default function HomePage() {
               if (nextOffByDateAndStaff[key]) {
                 continue;
               }
-              const removedResult = removeStaffAssignmentFromDate(nextCells, candidateDate, staffName);
+              const removedResult = removeStaffAssignmentFromDate(nextCells, candidateDate, staffName, workingShiftColumns);
               const quota = compensatoryQuotaByDate.get(candidateDate) ?? 0;
               const canUseQuota = quota > 0;
               const canRemoveWithoutShortage =
                 removedResult.removed &&
-                !shortageItemsForCells(removedResult.nextCells).some((item) => item.date === candidateDate);
+                !shortageItemsForCells(removedResult.nextCells, workingShiftColumns).some((item) => item.date === candidateDate);
 
               if (canUseQuota && (!removedResult.removed || canRemoveWithoutShortage)) {
                 nextOffByDateAndStaff[key] = true;
@@ -3023,7 +3198,7 @@ export default function HomePage() {
                 continue;
               }
 
-              const replacedResult = replaceStaffAssignmentForDate(nextCells, candidateDate, staffName, replacementName);
+              const replacedResult = replaceStaffAssignmentForDate(nextCells, candidateDate, staffName, replacementName, workingShiftColumns);
               if (!replacedResult.replaced) {
                 continue;
               }
@@ -3095,9 +3270,9 @@ export default function HomePage() {
           continue;
         }
         let guard = 0;
-        while ((overflowRemainingByDate.get(date) ?? 0) > 0 && guard < slotCapacityPerDate * 2) {
+        while ((overflowRemainingByDate.get(date) ?? 0) > 0 && guard < getSlotCapacity() * 2) {
           guard += 1;
-          const shortagesForDate = shortageItemsForCells(nextCells)
+          const shortagesForDate = shortageItemsForCells(nextCells, workingShiftColumns)
             .filter((item) => item.date === date)
             .sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
           if (shortagesForDate.length === 0) {
@@ -3108,12 +3283,12 @@ export default function HomePage() {
           const availableCandidates = staffPool
             .filter((name) => !assignedNames.has(name))
             .filter((name) => !nextOffByDateAndStaff[`${date}|${name}`])
-            .filter((name) => shiftColumns.some((column) => canWorkOnShift(date, column.shiftType, name)))
+            .filter((name) => workingShiftColumns.some((column) => canWorkOnShift(date, column.shiftType, name)))
             .filter((name) => {
               if (!highestPriorityShortageTime) {
                 return true;
               }
-              return shiftColumns.some(
+              return workingShiftColumns.some(
                 (column) => canWorkOnShift(date, column.shiftType, name) && shiftTypeCoversTime(column.shiftType, highestPriorityShortageTime)
               );
             });
@@ -3154,6 +3329,9 @@ export default function HomePage() {
             }
           }
           if (!targetSlot) {
+            if (availableCandidates.length > 0 && tryDuplicateShiftColumn(date, highestPriorityShortageTime, "step-7b")) {
+              continue;
+            }
             break;
           }
 
@@ -3215,14 +3393,14 @@ export default function HomePage() {
       appendLog("info", "analysis", `職員別割当回数: ${staffLoadSummary}`);
       pushSnapshot("analysis", "分析結果", "日次集計まで反映");
 
-      const timeBasedShortages = shortageItemsForCells(nextCells);
+      const timeBasedShortages = shortageItemsForCells(nextCells, workingShiftColumns);
       if (useAiAssistance) {
         const shortageCandidatePayload = timeBasedShortages.slice(0, 6).map((item) => {
           const assignedNames = assignedByDate.get(item.date) ?? new Set<string>();
           const candidates = staffPool
             .filter((name) => !assignedNames.has(name))
             .filter((name) => !nextOffByDateAndStaff[`${item.date}|${name}`])
-            .filter((name) => shiftColumns.some((column) => canWorkOnShift(item.date, column.shiftType, name)))
+            .filter((name) => workingShiftColumns.some((column) => canWorkOnShift(item.date, column.shiftType, name)))
             .slice(0, 8)
             .map((name) => ({
               staffName: name,
@@ -3230,9 +3408,13 @@ export default function HomePage() {
               monthlyAssignments: assignmentCountByStaff.get(name) ?? 0,
               saturdayAssignments: saturdayAssignmentCountByStaff.get(name) ?? 0,
               weeklyDaysTarget: partByName.get(name)?.weeklyDays ?? null,
-              candidateShiftTypes: shiftColumns
-                .filter((column) => shiftTypeCoversTime(column.shiftType, item.time) && canWorkOnShift(item.date, column.shiftType, name))
-                .map((column) => column.shiftType)
+              candidateShiftTypes: Array.from(
+                new Set(
+                  workingShiftColumns
+                    .filter((column) => shiftTypeCoversTime(column.shiftType, item.time) && canWorkOnShift(item.date, column.shiftType, name))
+                    .map((column) => column.shiftType)
+                )
+              )
             }));
           return { ...item, candidates };
         });
