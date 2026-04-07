@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AwsCredentialError, getMasterData, putMasterData } from "@/lib/dynamodb";
 import { logError } from "@/lib/server-log";
-import { MasterData } from "@/types/master-data";
+import {
+  MasterData,
+  normalizeMasterData,
+  SHIFT_AUTO_GENERATION_CHECKLIST_ITEMS,
+  type ShiftAutoGenerationChecklistItemId,
+} from "@/types/master-data";
 
 function isTime(value: string): boolean {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
@@ -222,6 +227,20 @@ function isMasterData(data: MasterData): boolean {
     return false;
   }
 
+  const checklist = data.shiftRules.autoGenerationChecklist;
+  if (checklist !== undefined && checklist !== null) {
+    if (typeof checklist !== "object" || !Array.isArray(checklist.enabledItemIds)) {
+      return false;
+    }
+    const knownChecklistIds = new Set(SHIFT_AUTO_GENERATION_CHECKLIST_ITEMS.map((item) => item.id));
+    const validChecklistIds = checklist.enabledItemIds.every(
+      (id) => typeof id === "string" && knownChecklistIds.has(id as ShiftAutoGenerationChecklistItemId),
+    );
+    if (!validChecklistIds) {
+      return false;
+    }
+  }
+
   return data.nurseryClasses.every((classItem) => {
     return Boolean(classItem.id) && Boolean(classItem.name.trim()) && typeof classItem.ageGroup === "string";
   });
@@ -269,7 +288,7 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
       }
     }
 
-    const normalizedBody: MasterData = {
+    const normalizedBody: MasterData = normalizeMasterData({
       ...body,
       shiftRules: {
         ...body.shiftRules,
@@ -277,8 +296,9 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
           ...body.shiftRules.autoGenerationPolicy,
           skipSundayProcessing: !body.shiftRules.autoGenerationPolicy.sundayChildcareEnabled
         }
-      }
-    };
+      },
+      updatedAt: body.updatedAt || new Date().toISOString()
+    });
 
     await putMasterData({
       ...normalizedBody,

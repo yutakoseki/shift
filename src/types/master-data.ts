@@ -83,11 +83,94 @@ export type ShiftAutoGenerationPolicy = {
   description: string;
 };
 
+/** 自動作成完了後に実行する検証項目（シフトルール管理で選択） */
+export type ShiftAutoGenerationChecklistItemId =
+  | "timeSlotCoverage"
+  | "noOffDayAssignmentConflict"
+  | "saturdayMinimumHeadcount"
+  | "saturdayPartFullMix"
+  | "compensatoryHolidaySameWeek"
+  | "partTimeWeeklyDaysPerWeek"
+  | "dailyHeadcountTarget";
+
+export type ShiftAutoGenerationChecklistPriority = 1 | 2 | 3;
+
+export type ShiftAutoGenerationChecklistItemDefinition = {
+  id: ShiftAutoGenerationChecklistItemId;
+  /** 1=最優先, 2=推奨, 3=参考 */
+  priority: ShiftAutoGenerationChecklistPriority;
+  /** UI・ログ用の並び（同一優先度内） */
+  sortOrder: number;
+  title: string;
+  description: string;
+};
+
+export type ShiftAutoGenerationChecklistSettings = {
+  /** 最終チェックで有効にする項目 id */
+  enabledItemIds: ShiftAutoGenerationChecklistItemId[];
+};
+
+export const SHIFT_AUTO_GENERATION_CHECKLIST_ITEMS: ShiftAutoGenerationChecklistItemDefinition[] = [
+  {
+    id: "timeSlotCoverage",
+    priority: 1,
+    sortOrder: 1,
+    title: "時間帯の必要人数",
+    description: "各日の時間帯ごとに、園の必要人数に対してシフトが足りているか。",
+  },
+  {
+    id: "noOffDayAssignmentConflict",
+    priority: 1,
+    sortOrder: 2,
+    title: "休み登録と割当の整合",
+    description: "事前に休みが入っている日・職員に、勤務が割り当てられていないか。",
+  },
+  {
+    id: "saturdayMinimumHeadcount",
+    priority: 1,
+    sortOrder: 3,
+    title: "土曜の最低人数",
+    description: "土曜日に配置される職員数が、ルールの最低人数を満たすか。",
+  },
+  {
+    id: "saturdayPartFullMix",
+    priority: 2,
+    sortOrder: 1,
+    title: "土曜の常勤／パート内訳",
+    description: "土曜の正規・パートの人数が、登録したパターンのいずれかに一致するか。",
+  },
+  {
+    id: "compensatoryHolidaySameWeek",
+    priority: 2,
+    sortOrder: 2,
+    title: "振替休日（同一週）",
+    description: "土曜勤務の常勤に対し、同一週の振替休みが確保できているか（未解消がないか）。",
+  },
+  {
+    id: "partTimeWeeklyDaysPerWeek",
+    priority: 2,
+    sortOrder: 3,
+    title: "パートの週ごとの勤務回数",
+    description: "各週の勤務日数が、マスタの週◯回を超えていないか。",
+  },
+  {
+    id: "dailyHeadcountTarget",
+    priority: 3,
+    sortOrder: 1,
+    title: "日次の目標人数（参考）",
+    description: "日ごとの目安人数に対する不足が残っていないか（時間帯チェックとは別の集約指標）。",
+  },
+];
+
+export const DEFAULT_SHIFT_AUTO_GENERATION_CHECKLIST_ENABLED_IDS: ShiftAutoGenerationChecklistItemId[] =
+  SHIFT_AUTO_GENERATION_CHECKLIST_ITEMS.filter((item) => item.priority <= 2).map((item) => item.id);
+
 export type ShiftRules = {
   saturdayRequirement: ShiftRuleSaturdayRequirement;
   compensatoryHoliday: ShiftRuleCompensatoryHoliday;
   creationOrder: ShiftRuleCreationStep[];
   autoGenerationPolicy: ShiftAutoGenerationPolicy;
+  autoGenerationChecklist: ShiftAutoGenerationChecklistSettings;
 };
 
 export type MasterData = {
@@ -237,6 +320,19 @@ function normalizeShiftRules(input: ShiftRules | undefined): ShiftRules {
       ? input.autoGenerationPolicy.sundayChildcareEnabled
       : defaults.autoGenerationPolicy.sundayChildcareEnabled;
 
+  const knownChecklistIds = new Set(SHIFT_AUTO_GENERATION_CHECKLIST_ITEMS.map((item) => item.id));
+  const normalizedChecklistRaw = input.autoGenerationChecklist?.enabledItemIds;
+  const normalizedChecklistIds = Array.isArray(normalizedChecklistRaw)
+    ? normalizedChecklistRaw.filter(
+        (id): id is ShiftAutoGenerationChecklistItemId =>
+          typeof id === "string" && knownChecklistIds.has(id as ShiftAutoGenerationChecklistItemId)
+      )
+    : [];
+  const autoGenerationChecklist: ShiftAutoGenerationChecklistSettings =
+    normalizedChecklistIds.length > 0
+      ? { enabledItemIds: normalizedChecklistIds }
+      : { enabledItemIds: [...DEFAULT_SHIFT_AUTO_GENERATION_CHECKLIST_ENABLED_IDS] };
+
   return {
     saturdayRequirement: {
       enabled:
@@ -280,7 +376,8 @@ function normalizeShiftRules(input: ShiftRules | undefined): ShiftRules {
         typeof input.autoGenerationPolicy?.description === "string" && input.autoGenerationPolicy.description.trim().length > 0
           ? input.autoGenerationPolicy.description.trim()
           : defaults.autoGenerationPolicy.description
-    }
+    },
+    autoGenerationChecklist
   };
 }
 
@@ -337,6 +434,9 @@ export function createDefaultShiftRules(): ShiftRules {
       skipSundayProcessing: true,
       preventFixedFullTimeShift: true,
       description: "シフト自動作成は、ルールベースのプログラムとAI補助を組み合わせて実行する。"
+    },
+    autoGenerationChecklist: {
+      enabledItemIds: [...DEFAULT_SHIFT_AUTO_GENERATION_CHECKLIST_ENABLED_IDS]
     }
   };
 }

@@ -13,7 +13,8 @@ type AiAction =
   | "suggestCompensatoryHolidays"
   | "summarizeLogs"
   | "naturalLanguageEdit"
-  | "interpretSupplementNote";
+  | "interpretSupplementNote"
+  | "suggestChecklistFix";
 
 type AiRequestBody = {
   action?: AiAction;
@@ -240,6 +241,16 @@ function buildMessages(action: AiAction, payload: unknown): PromptMessage[] {
       {
         role: "system",
         content: `${systemBase}\n出力形式: {"guidance":string,"priorityRules":string[]}\nguidanceは短文、priorityRulesは最大5件。補足事項は強制命令ではなく優先度ヒントとして解釈し、過剰に断定しない。`
+      },
+      { role: "user", content: sharedUser }
+    ];
+  }
+
+  if (action === "suggestChecklistFix") {
+    return [
+      {
+        role: "system",
+        content: `${systemBase}\n出力形式: {"operations":[{"type":"assignShift"|"clearShift"|"setOff","date":string,"staffName":string,"shiftType"?:string,"enabled"?:boolean,"reason"?:string}],"summary":string}\noperationsは最大12件。\n\npayload.checklistItemId に応じて現在の割当・休みを最小限の変更で直す。\n- timeSlotCoverage: 不足時間帯に assignShift（空き枠・勤務条件を満たす職員）\n- noOffDayAssignmentConflict: 休みと矛盾するセルを clearShift するか、誤った setOff を enabled:false で取り消す\n- saturdayMinimumHeadcount: 土曜に assignShift で人数を増やす\n- saturdayPartFullMix: 土曜の常勤/パート人数を payload.saturdayRequirement の combinations のいずれかに一致させる（clearShift・assignShift・必要なら他曜へ振替）\n- compensatoryHolidaySameWeek: 土曜出勤の常勤について、同一週の月〜金のいずれかに setOff（enabled:true）で振替休日を追加。既に勤務が入っている場合は先に clearShift\n- partTimeWeeklyDaysPerWeek: 週の上限を超えた日の割当を clearShift し、可能なら別日で調整\n- dailyHeadcountTarget: 不足している日に assignShift\n\ndate/staffName/shiftType は payload の実在値のみ。shiftType は availableShiftTypes のいずれか。`
       },
       { role: "user", content: sharedUser }
     ];

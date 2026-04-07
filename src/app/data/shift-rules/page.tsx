@@ -13,7 +13,10 @@ import {
 } from "@/lib/master-data-client";
 import {
   createDefaultShiftRules,
+  DEFAULT_SHIFT_AUTO_GENERATION_CHECKLIST_ENABLED_IDS,
   MasterData,
+  SHIFT_AUTO_GENERATION_CHECKLIST_ITEMS,
+  type ShiftAutoGenerationChecklistItemId,
   ShiftRuleCreationStep,
   ShiftRules,
 } from "@/types/master-data";
@@ -57,6 +60,13 @@ function normalizeShiftRulesForForm(input: ShiftRules | undefined): ShiftRules {
         typeof input.autoGenerationPolicy?.sundayChildcareEnabled === "boolean"
           ? input.autoGenerationPolicy.sundayChildcareEnabled
           : defaults.autoGenerationPolicy.sundayChildcareEnabled,
+    },
+    autoGenerationChecklist: {
+      enabledItemIds:
+        input.autoGenerationChecklist?.enabledItemIds &&
+        input.autoGenerationChecklist.enabledItemIds.length > 0
+          ? [...input.autoGenerationChecklist.enabledItemIds]
+          : [...defaults.autoGenerationChecklist.enabledItemIds],
     },
   };
 }
@@ -193,6 +203,37 @@ export default function ShiftRulesPage() {
     () => (data ? calculateSaturdayRequiredMax(data) : 0),
     [data],
   );
+
+  function setAutoChecklistIds(nextIds: string[]): void {
+    if (!rules) {
+      return;
+    }
+    const known = new Set(
+      SHIFT_AUTO_GENERATION_CHECKLIST_ITEMS.map((item) => item.id),
+    );
+    const filtered = nextIds.filter((id): id is ShiftAutoGenerationChecklistItemId =>
+      known.has(id as ShiftAutoGenerationChecklistItemId),
+    );
+    patchRules({
+      autoGenerationChecklist: {
+        enabledItemIds:
+          filtered.length > 0 ? (filtered as ShiftRules["autoGenerationChecklist"]["enabledItemIds"]) : [...DEFAULT_SHIFT_AUTO_GENERATION_CHECKLIST_ENABLED_IDS],
+      },
+    });
+  }
+
+  function toggleAutoChecklistItem(id: ShiftAutoGenerationChecklistItemId): void {
+    if (!rules) {
+      return;
+    }
+    const current = new Set(rules.autoGenerationChecklist.enabledItemIds);
+    if (current.has(id)) {
+      current.delete(id);
+    } else {
+      current.add(id);
+    }
+    setAutoChecklistIds(Array.from(current));
+  }
 
   function patchRules(patch: Partial<ShiftRules>): void {
     setData((prev) => {
@@ -785,6 +826,108 @@ export default function ShiftRulesPage() {
             />
           </label>
         </div>
+      </section>
+
+      <section className="rounded-xl bg-white p-4 shadow-sm">
+        <h2 className="text-lg font-semibold text-orange-900">
+          自動作成チェックリスト（最終確認）
+        </h2>
+        <p className="mt-1 text-sm text-orange-700">
+          シフト自動作成の処理直後に、ここでオンにした項目だけを検証して結果を表示します。優先度は「最優先 → 推奨 → 参考」です。
+        </p>
+        {editable ? (
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-800 hover:bg-orange-200"
+              onClick={() =>
+                setAutoChecklistIds(
+                  SHIFT_AUTO_GENERATION_CHECKLIST_ITEMS.filter((item) => item.priority <= 2).map(
+                    (item) => item.id,
+                  ),
+                )
+              }
+            >
+              最優先＋推奨を選ぶ
+            </button>
+            <button
+              type="button"
+              className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-800 hover:bg-orange-200"
+              onClick={() =>
+                setAutoChecklistIds(
+                  SHIFT_AUTO_GENERATION_CHECKLIST_ITEMS.map((item) => item.id),
+                )
+              }
+            >
+              すべて選ぶ
+            </button>
+            <button
+              type="button"
+              className="rounded-md bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200"
+              onClick={() =>
+                setAutoChecklistIds(
+                  SHIFT_AUTO_GENERATION_CHECKLIST_ITEMS.filter((item) => item.priority === 1).map(
+                    (item) => item.id,
+                  ),
+                )
+              }
+            >
+              最優先のみ
+            </button>
+          </div>
+        ) : null}
+        <ul className="mt-4 space-y-3">
+          {SHIFT_AUTO_GENERATION_CHECKLIST_ITEMS.slice()
+            .sort((a, b) => a.priority - b.priority || a.sortOrder - b.sortOrder)
+            .map((item) => {
+              const checked = rules.autoGenerationChecklist.enabledItemIds.includes(
+                item.id,
+              );
+              const priorityClass =
+                item.priority === 1
+                  ? "bg-orange-200 text-orange-950"
+                  : item.priority === 2
+                    ? "bg-amber-100 text-amber-950"
+                    : "bg-slate-200 text-slate-800";
+              const priorityLabel =
+                item.priority === 1
+                  ? "最優先"
+                  : item.priority === 2
+                    ? "推奨"
+                    : "参考";
+              return (
+                <li
+                  key={item.id}
+                  className="rounded-lg border border-orange-100 bg-orange-50/50 p-3"
+                >
+                  <label className="flex cursor-pointer flex-wrap items-start gap-3">
+                    <input
+                      type="checkbox"
+                      className="orange-checkbox mt-1"
+                      checked={checked}
+                      disabled={!editable}
+                      onChange={() => toggleAutoChecklistItem(item.id)}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded px-2 py-0.5 text-xs font-semibold ${priorityClass}`}
+                        >
+                          {priorityLabel}
+                        </span>
+                        <span className="font-semibold text-orange-900">
+                          {item.title}
+                        </span>
+                      </span>
+                      <span className="mt-1 block text-sm text-orange-800">
+                        {item.description}
+                      </span>
+                    </span>
+                  </label>
+                </li>
+              );
+            })}
+        </ul>
       </section>
     </main>
   );

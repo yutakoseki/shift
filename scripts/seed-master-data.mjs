@@ -281,6 +281,16 @@ function buildShiftRules() {
       skipSundayProcessing: true,
       preventFixedFullTimeShift: true,
       description: "シフト自動作成は、ルールベースのプログラムとAI補助を組み合わせて実行する。"
+    },
+    autoGenerationChecklist: {
+      enabledItemIds: [
+        "timeSlotCoverage",
+        "noOffDayAssignmentConflict",
+        "saturdayMinimumHeadcount",
+        "saturdayPartFullMix",
+        "compensatoryHolidaySameWeek",
+        "partTimeWeeklyDaysPerWeek"
+      ]
     }
   };
 }

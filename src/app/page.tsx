@@ -3,7 +3,14 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { createDefaultShiftRules, MasterData, PartTimeStaff, ShiftRules } from "@/types/master-data";
+import { evaluateShiftAutoGenerationChecklist } from "@/lib/shift-auto-generation-checklist";
+import type { ShiftAutoGenerationChecklistResult } from "@/lib/shift-auto-generation-checklist";
+import {
+  createDefaultShiftRules,
+  MasterData,
+  PartTimeStaff,
+  ShiftRules,
+} from "@/types/master-data";
 import { SHIFT_CLASS_GROUPS, ShiftClassGroup, ShiftColumn, ShiftEntry, ShiftMonthResponse } from "@/types/shift";
 import FullscreenLoading from "@/components/fullscreen-loading";
 import { showToast } from "@/lib/master-data-client";
@@ -291,6 +298,7 @@ function teacherFriendlyStepLabel(step: string): string {
     "hard-rule-time": "時間帯不足チェック",
     "hard-rule": "絶対ルールチェック",
     "soft-rule": "目安不足チェック",
+    checklist: "最終チェックリスト",
     finish: "完了",
     error: "エラー"
   };
@@ -372,6 +380,7 @@ export default function HomePage() {
   const [autoGenerateError, setAutoGenerateError] = useState("");
   const [autoGenerateLogs, setAutoGenerateLogs] = useState<AutoGenerateLogItem[]>([]);
   const [autoGenerateLogsExpanded, setAutoGenerateLogsExpanded] = useState(false);
+  const [autoGenerateChecklistResults, setAutoGenerateChecklistResults] = useState<ShiftAutoGenerationChecklistResult[]>([]);
   const [aiShortageSuggestions, setAiShortageSuggestions] = useState<AiShortageSuggestion[]>([]);
   const [aiCompensatorySuggestions, setAiCompensatorySuggestions] = useState<AiCompensatorySuggestion[]>([]);
   const [aiLogSummary, setAiLogSummary] = useState("");
@@ -380,11 +389,14 @@ export default function HomePage() {
   const [aiNaturalLanguageInstruction, setAiNaturalLanguageInstruction] = useState("");
   const [aiNaturalLanguageResult, setAiNaturalLanguageResult] = useState("");
   const [aiActionRunning, setAiActionRunning] = useState(false);
+  const [checklistAiFixingId, setChecklistAiFixingId] = useState<string | null>(null);
   const [aiStreamingLabel, setAiStreamingLabel] = useState("");
   const [aiStreamingText, setAiStreamingText] = useState("");
   const [aiStreamingActive, setAiStreamingActive] = useState(false);
   const [aiResponseLogs, setAiResponseLogs] = useState<AiResponseLogItem[]>([]);
   const autoGenerateRunningRef = useRef(false);
+  /** 日次目標チェックの再計算用（自動作成完了時に保存） */
+  const lastAutoGenChecklistContextRef = useRef<{ targetByDate: Record<string, number> } | null>(null);
   const topScrollRef = useRef<HTMLDivElement | null>(null);
   const bottomScrollRef = useRef<HTMLDivElement | null>(null);
   const [topScrollWidth, setTopScrollWidth] = useState(0);
@@ -1688,6 +1700,8 @@ export default function HomePage() {
     setSupplementNote("");
     setAutoGenerateError("");
     setAutoGenerateLogs([]);
+    setAutoGenerateChecklistResults([]);
+    lastAutoGenChecklistContextRef.current = null;
     setAiShortageSuggestions([]);
     setAiCompensatorySuggestions([]);
     setAiLogSummary("");
@@ -1940,6 +1954,11 @@ export default function HomePage() {
       const ranked = (typed.rankedStaffNames ?? []).slice(0, 5);
       return `候補順: ${ranked.join(" -> ")}${typed.reason ? ` / 理由: ${typed.reason}` : ""}`;
     }
+    if (action === "suggestChecklistFix") {
+      const typed = result as { operations?: unknown[]; summary?: string };
+      const n = typed.operations?.length ?? 0;
+      return `${typed.summary ?? "修正案"}（操作 ${n} 件）`;
+    }
     const raw = JSON.stringify(result, null, 2);
     if (raw.length <= 1200) {
       return raw;
@@ -2173,6 +2192,116 @@ export default function HomePage() {
     return { applied, skipped };
   }
 
+  function rebuildChecklistResultsFromCurrentCells(): void {
+    if (!masterData) {
+      return;
+    }
+    const rules = masterData.shiftRules ?? createDefaultShiftRules();
+    const fullNames = masterData.fullTimeStaff.map((s) => s.name.trim()).filter((item) => item.length > 0);
+    const timeBased = shortageItemsForCells(cells);
+    const ctx = lastAutoGenChecklistContextRef.current;
+    const rows = evaluateShiftAutoGenerationChecklist({
+      rules,
+      monthDates: dates,
+      cells,
+      offByDateAndStaff,
+      timeBasedShortages: timeBased,
+      fullTimeStaffNames: fullNames,
+      partTimeStaff: masterData.partTimeStaff.map((p) => ({
+        name: p.name.trim(),
+        weeklyDays: p.weeklyDays
+      })),
+      targetByDate: ctx?.targetByDate,
+      skipSundayProcessing: rules.autoGenerationPolicy.skipSundayProcessing
+    });
+    setAutoGenerateChecklistResults(rows);
+  }
+
+  async function handleAiChecklistFix(row: ShiftAutoGenerationChecklistResult): Promise<void> {
+    if (row.status !== "fail" || !masterData) {
+      return;
+    }
+    if (!masterData.shiftRules.autoGenerationPolicy.useAi) {
+      showToast("シフトルール管理で「AIによる調整・候補提案」を有効にしてください。");
+      return;
+    }
+    setChecklistAiFixingId(row.id);
+    setAiActionRunning(true);
+    try {
+      const assignments = Object.entries(cells)
+        .map(([cellKey, staffName]) => ({ cellKey, staffName: staffName.trim() }))
+        .filter((item) => item.staffName.length > 0)
+        .map((item) => {
+          const [date, classGroup, columnId] = item.cellKey.split("|");
+          const column = shiftColumns.find((entry) => entry.id === columnId);
+          return {
+            date,
+            classGroup,
+            shiftType: column?.shiftType ?? "",
+            staffName: item.staffName
+          };
+        })
+        .filter((item) => item.date && item.shiftType);
+      const offRecords = Object.entries(offByDateAndStaff)
+        .filter(([, enabled]) => enabled)
+        .map(([key]) => {
+          const [date, staffName] = key.split("|");
+          return { date, staffName };
+        });
+      const staffProfiles = [
+        ...masterData.fullTimeStaff.map((item) => ({
+          name: item.name,
+          kind: "full-time",
+          possibleShiftPatternCodes: item.possibleShiftPatternCodes
+        })),
+        ...masterData.partTimeStaff.map((item) => ({
+          name: item.name,
+          kind: "part-time",
+          possibleShiftPatternCodes: item.possibleShiftPatternCodes,
+          availableWeekdays: item.availableWeekdays,
+          availableStartTime: item.availableStartTime,
+          availableEndTime: item.availableEndTime
+        }))
+      ];
+      const rules = masterData.shiftRules ?? createDefaultShiftRules();
+      const result = await callShiftAi<{ operations?: AiNaturalLanguageOperation[]; summary?: string }>(
+        "suggestChecklistFix",
+        {
+          month,
+          checklistItemId: row.id,
+          checklistTitle: row.title,
+          failureDetail: row.detail ?? "",
+          availableShiftTypes: allShiftTypes,
+          assignments,
+          offRecords,
+          staffProfiles,
+          saturdayRequirement: rules.saturdayRequirement,
+          compensatoryHoliday: rules.compensatoryHoliday,
+          skipSundayProcessing: rules.autoGenerationPolicy.skipSundayProcessing
+        },
+        { stream: true, streamLabel: "AIがチェック不合格の修正案を作成中..." }
+      );
+      const operations = result?.operations ?? [];
+      if (operations.length === 0) {
+        showToast("AIから有効な操作が返りませんでした。");
+        return;
+      }
+      const applyResult = applyAiOperations(operations);
+      if (applyResult.applied === 0) {
+        const first = applyResult.skipped[0] ?? "条件により反映できませんでした。";
+        showToast(`反映0件: ${first}`);
+        return;
+      }
+      const skipHint =
+        applyResult.skipped.length > 0 ? `（一部スキップ ${applyResult.skipped.length} 件）` : "";
+      showToast(`${result?.summary ?? "AI修正案を反映しました。"}（適用 ${applyResult.applied} 件）${skipHint}`);
+      rebuildChecklistResultsFromCurrentCells();
+    } finally {
+      setAiActionRunning(false);
+      setChecklistAiFixingId(null);
+    }
+  }
+
   async function handleAiNaturalLanguageEdit(): Promise<void> {
     const instruction = aiNaturalLanguageInstruction.trim();
     if (!instruction || !masterData) {
@@ -2299,6 +2428,7 @@ export default function HomePage() {
     }
     setAutoGenerateError("");
     setAutoGenerateLogsExpanded(false);
+    setAutoGenerateChecklistResults([]);
     setAiShortageSuggestions([]);
     setAiCompensatorySuggestions([]);
     setAiLogSummary("");
@@ -3394,6 +3524,36 @@ export default function HomePage() {
       pushSnapshot("analysis", "分析結果", "日次集計まで反映");
 
       const timeBasedShortages = shortageItemsForCells(nextCells, workingShiftColumns);
+
+      const targetByDatePlain = Object.fromEntries(targetByDate);
+      lastAutoGenChecklistContextRef.current = { targetByDate: targetByDatePlain };
+      const checklistRows = evaluateShiftAutoGenerationChecklist({
+        rules,
+        monthDates: dates,
+        cells: nextCells,
+        offByDateAndStaff: nextOffByDateAndStaff,
+        timeBasedShortages,
+        fullTimeStaffNames: fullTimeNames,
+        partTimeStaff: partStaff.map((item) => ({
+          name: item.normalizedName,
+          weeklyDays: item.weeklyDays
+        })),
+        unassignedSlotDays: unassignedSlotCount,
+        targetByDate: targetByDatePlain,
+        skipSundayProcessing
+      });
+      setAutoGenerateChecklistResults(checklistRows);
+      for (const row of checklistRows) {
+        const msg = `${row.title}: ${row.detail ?? ""}`.trim();
+        if (row.status === "fail") {
+          appendLog("warn", "checklist", msg);
+        } else if (row.status === "pass") {
+          appendLog("info", "checklist", msg);
+        } else {
+          appendLog("info", "checklist", msg);
+        }
+      }
+
       if (useAiAssistance) {
         const shortageCandidatePayload = timeBasedShortages.slice(0, 6).map((item) => {
           const assignedNames = assignedByDate.get(item.date) ?? new Set<string>();
@@ -3513,6 +3673,7 @@ export default function HomePage() {
     } catch (error) {
       setAutoGenerateError(error instanceof Error ? error.message : "下書き作成に失敗しました。");
       appendLog("warn", "error", error instanceof Error ? error.message : "下書き作成に失敗しました。");
+      setAutoGenerateChecklistResults([]);
       setAutoGenerateLogs(executionLogs);
     } finally {
       setAiStreamingActive(false);
@@ -3577,6 +3738,90 @@ export default function HomePage() {
         </div>
         </section>
         {autoGenerateError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{autoGenerateError}</p> : null}
+        {autoGenerateChecklistResults.length > 0 ? (
+          <section className="rounded-xl bg-white p-4 shadow-sm">
+            <h2 className="text-lg font-semibold text-orange-900">
+              自動作成 最終チェックリスト
+            </h2>
+            <p className="mt-1 text-sm text-orange-700">
+              シフトルール管理でオンにした項目の結果です。✓ は問題なし、✕ は要確認です。「—」はルール未使用などで今回の確認から外した項目です。✕ の行は AI
+              で修正案を適用できます（反映後、ここで再チェックします）。
+            </p>
+            <ul className="mt-3 space-y-2">
+              {autoGenerateChecklistResults.map((row) => {
+                const isPass = row.status === "pass";
+                const isFail = row.status === "fail";
+                const rowFrame =
+                  isPass
+                    ? "border-orange-100 bg-white text-orange-950"
+                    : isFail
+                      ? "border-red-200 bg-red-50/50 text-red-950"
+                      : "border-slate-200 bg-slate-50 text-slate-700";
+                const iconFrame =
+                  isPass
+                    ? "border-orange-400 text-orange-700"
+                    : isFail
+                      ? "border-red-500 text-red-600"
+                      : "border-slate-300 text-slate-500";
+                const iconChar = isPass ? "✓" : isFail ? "✕" : "—";
+                const iconLabel = isPass ? "問題なし" : isFail ? "要確認" : "対象外";
+                return (
+                <li
+                  key={row.id}
+                  className={`flex gap-3 rounded-lg border px-3 py-3 text-sm ${rowFrame}`}
+                >
+                  <span
+                    className={`mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 text-base font-bold leading-none ${iconFrame}`}
+                    role="img"
+                    aria-label={iconLabel}
+                  >
+                    {iconChar}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-[inherit]">{row.title}</div>
+                    <p className="mt-1 leading-relaxed text-[inherit] opacity-90">
+                      {isPass ? (
+                        <>
+                          {row.detail ? (
+                            <span>{row.detail}</span>
+                          ) : (
+                            <span>問題ありません。</span>
+                          )}
+                        </>
+                      ) : isFail ? (
+                        <span>{row.detail ?? "要確認です。"}</span>
+                      ) : (
+                        <span>{row.detail ?? "このルールはオフのため確認していません。"}</span>
+                      )}
+                    </p>
+                    {isFail ? (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          className="rounded-md bg-orange-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-orange-700 disabled:opacity-50"
+                          disabled={
+                            aiActionRunning ||
+                            checklistAiFixingId !== null ||
+                            !masterData?.shiftRules.autoGenerationPolicy.useAi
+                          }
+                          onClick={() => void handleAiChecklistFix(row)}
+                        >
+                          {checklistAiFixingId === row.id ? "AI修正中…" : "AIで修正"}
+                        </button>
+                        {!masterData?.shiftRules.autoGenerationPolicy.useAi ? (
+                          <span className="text-xs text-orange-700">
+                            シフトルールで AI を有効にすると使えます
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </li>
+                );
+              })}
+            </ul>
+          </section>
+        ) : null}
         {autoGenerateLogs.length > 0 ? (
           <section className="rounded-xl bg-white p-4 shadow-sm">
             <div className="rounded-md border border-orange-200 bg-white">
